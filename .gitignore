@@ -1,0 +1,9 @@
+# Build output
+/budgit
+/budgit.exe
+/dist/
+
+# Financial data — budgit stores it in ~/.budgit/ by default, but if you ever
+# point --file at the repo, these keep it out of git.
+budgit.json
+*.budgit.json

@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>budgit</title>
+<style>
+/* ---- palette: light is the base; dark redefines the same roles ---- */
+:root {
+  color-scheme: light;
+  --page:           #f9f9f7;
+  --surface:        #fcfcfb;
+  --text-primary:   #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted:     #898781;
+  --grid:           #e1e0d9;
+  --baseline:       #c3c2b7;
+  --border:         rgba(11,11,11,0.10);
+  --series-1:       #2a78d6;
+  --critical:       #d03b3b;
+  --good:           #006300;
+  --track:          #e8e7e1;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page:           #0d0d0d;
+    --surface:        #1a1a19;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --grid:           #2c2c2a;
+    --baseline:       #383835;
+    --border:         rgba(255,255,255,0.10);
+    --series-1:       #3987e5;
+    --critical:       #d03b3b;
+    --good:           #0ca30c;
+    --track:          #2c2c2a;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page:           #0d0d0d;
+  --surface:        #1a1a19;
+  --text-primary:   #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted:     #898781;
+  --grid:           #2c2c2a;
+  --baseline:       #383835;
+  --border:         rgba(255,255,255,0.10);
+  --series-1:       #3987e5;
+  --critical:       #d03b3b;
+  --good:           #0ca30c;
+  --track:          #2c2c2a;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text-primary);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1060px; margin: 0 auto; padding: 32px 24px 64px; }
+
+header { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-bottom: 28px; }
+h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+h1 span { color: var(--text-muted); font-weight: 400; }
+.spacer { flex: 1; }
+select, button.ghost {
+  font: inherit; font-size: 14px;
+  color: var(--text-primary); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 7px 10px; cursor: pointer;
+}
+button.ghost:hover, select:hover { border-color: var(--baseline); }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px 22px;
+  margin-bottom: 20px;
+}
+h2 { font-size: 13px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+     color: var(--text-secondary); margin: 0 0 4px; }
+.sub { font-size: 13px; color: var(--text-muted); margin: 0 0 18px; }
+
+/* ---- stat tiles: the headline numbers are not charts ---- */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }
+.tile .label { font-size: 12px; color: var(--text-muted); letter-spacing: 0.03em; text-transform: uppercase; }
+.tile .value { font-size: 26px; font-weight: 600; margin-top: 6px; letter-spacing: -0.02em; }
+.tile .note { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
+.pos { color: var(--good); }
+.neg { color: var(--critical); }
+
+/* ---- budget meters ---- */
+.meter-row { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; padding: 12px 0; border-top: 1px solid var(--grid); }
+.meter-row:first-of-type { border-top: 0; }
+.meter-name { font-weight: 500; }
+.meter-figs { font-variant-numeric: tabular-nums; font-size: 14px; color: var(--text-secondary); text-align: right; white-space: nowrap; }
+.meter-track {
+  grid-column: 1 / -1;
+  height: 8px; border-radius: 4px; background: var(--track);
+  overflow: hidden; margin-top: 2px;
+  display: flex;
+}
+.meter-fill { height: 100%; border-radius: 4px; background: var(--series-1); min-width: 2px; }
+.meter-fill.over { background: var(--critical); }
+.tag { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; padding: 1px 6px; border-radius: 4px; margin-left: 8px; }
+.tag.over { color: var(--critical); border: 1px solid var(--critical); }
+.tag.none { color: var(--text-muted); border: 1px solid var(--border); }
+
+/* ---- charts ---- */
+.chart-box { position: relative; height: 260px; }
+.legend { display: flex; gap: 18px; font-size: 13px; color: var(--text-secondary); margin-bottom: 12px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: middle; }
+
+/* ---- tables ---- */
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: left; font-size: 12px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase;
+     color: var(--text-muted); padding: 0 10px 8px 0; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+td { padding: 9px 10px 9px 0; border-bottom: 1px solid var(--grid); color: var(--text-primary); }
+tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; padding-right: 0; }
+td.dim { color: var(--text-secondary); }
+.scroll { overflow-x: auto; }
+.empty { color: var(--text-muted); font-size: 14px; padding: 8px 0; }
+.hidden { display: none; }
+footer { color: var(--text-muted); font-size: 12px; margin-top: 28px; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>budgit <span id="month-label"></span></h1>
+    <div class="spacer"></div>
+    <select id="month-picker" aria-label="Month"></select>
+    <button class="ghost" id="theme-toggle" title="Toggle light/dark">◐</button>
+  </header>
+
+  <div class="tiles" id="tiles"></div>
+
+  <section class="card">
+    <h2>Budget vs actual</h2>
+    <p class="sub">Spending against each category's allowance this month. Bars past their track are marked <strong>OVER</strong>.</p>
+    <div id="meters"></div>
+  </section>
+
+  <section class="card">
+    <h2>Spending trend</h2>
+    <p class="sub">Total monthly spend against total budgeted, last 6 months.</p>
+    <div class="legend">
+      <span><i style="background:var(--series-1)"></i>Spent</span>
+      <span><i style="background:var(--text-muted)"></i>Budgeted</span>
+      <span class="spacer"></span>
+      <button class="ghost" id="trend-toggle" style="padding:2px 8px;font-size:12px">Table view</button>
+    </div>
+    <div class="chart-box" id="trend-box"><canvas id="trend"></canvas></div>
+    <div id="trend-table" class="hidden scroll"></div>
+  </section>
+
+  <section class="card">
+    <h2>Transactions</h2>
+    <p class="sub" id="txn-sub"></p>
+    <div class="scroll"><div id="txns"></div></div>
+  </section>
+
+  <footer>
+    Local data: <code id="datafile"></code> · read-only view · edits go through the CLI
+  </footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+// Money arrives as integer cents and is formatted without float arithmetic.
+function money(cents, opts) {
+  opts = opts || {};
+  const neg = cents < 0;
+  const abs = Math.abs(cents);
+  const dollars = Math.trunc(abs / 100).toLocaleString('en-US');
+  const rest = String(abs % 100).padStart(2, '0');
+  const body = opts.whole ? dollars : dollars + '.' + rest;
+  return (neg ? '-$' : '$') + body;
+}
+function monthLabel(m) {
+  const [y, mo] = m.split('-');
+  return new Date(Number(y), Number(mo) - 1, 1)
+    .toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+}
+const el = (t, cls, txt) => {
+  const n = document.createElement(t);
+  if (cls) n.className = cls;
+  if (txt !== undefined) n.textContent = txt;
+  return n;
+};
+
+let chart = null;
+let state = null;
+
+async function load(month) {
+  const url = '/api/dashboard' + (month ? '?month=' + encodeURIComponent(month) : '');
+  const res = await fetch(url);
+  if (!res.ok) { alert('budgit: ' + await res.text()); return; }
+  state = await res.json();
+  render();
+}
+
+function render() {
+  const d = state, rep = d.report;
+  document.getElementById('month-label').textContent = monthLabel(d.month);
+  document.getElementById('datafile').textContent = d.data_file;
+
+  const picker = document.getElementById('month-picker');
+  picker.innerHTML = '';
+  for (const m of d.available_months) {
+    const o = el('option', null, monthLabel(m));
+    o.value = m;
+    if (m === d.month) o.selected = true;
+    picker.appendChild(o);
+  }
+
+  renderTiles(d, rep);
+  renderMeters(rep);
+  renderTrend(d.trend);
+  renderTxns(d.transactions);
+}
+
+function renderTiles(d, rep) {
+  const remaining = rep.total_budget_cents - rep.total_spent_cents;
+  const tiles = [
+    { label: 'Spent', value: money(rep.total_spent_cents),
+      note: rep.total_budget_cents > 0 ? 'of ' + money(rep.total_budget_cents, {whole:true}) + ' budgeted' : 'no budgets set' },
+    { label: 'Remaining', value: money(remaining), cls: remaining < 0 ? 'neg' : 'pos',
+      note: remaining < 0 ? 'over budget' : 'left this month' },
+    { label: 'Income', value: money(rep.total_income_cents), note: 'received this month' },
+    { label: 'Net', value: money(rep.net_cents), cls: rep.net_cents < 0 ? 'neg' : 'pos',
+      note: 'income − spend' },
+  ];
+  const box = document.getElementById('tiles');
+  box.innerHTML = '';
+  for (const t of tiles) {
+    const c = el('div', 'tile');
+    c.appendChild(el('div', 'label', t.label));
+    c.appendChild(el('div', 'value ' + (t.cls || ''), t.value));
+    c.appendChild(el('div', 'note', t.note));
+    box.appendChild(c);
+  }
+}
+
+function renderMeters(rep) {
+  const box = document.getElementById('meters');
+  box.innerHTML = '';
+  if (!rep.expenses.length) {
+    box.appendChild(el('p', 'empty', 'No expense activity or budgets for this month.'));
+    return;
+  }
+  for (const r of rep.expenses) {
+    const row = el('div', 'meter-row');
+
+    const name = el('div', 'meter-name');
+    name.appendChild(document.createTextNode(r.category));
+    if (r.over_budget) name.appendChild(el('span', 'tag over', 'OVER'));
+    else if (!r.has_budget) name.appendChild(el('span', 'tag none', 'NO BUDGET'));
+    row.appendChild(name);
+
+    const figs = r.has_budget
+      ? money(r.actual_cents) + ' / ' + money(r.budget_cents, {whole:true}) + '  ·  ' + Math.round(r.percent_used) + '%'
+      : money(r.actual_cents);
+    row.appendChild(el('div', 'meter-figs', figs));
+
+    const track = el('div', 'meter-track');
+    if (r.has_budget && r.budget_cents > 0) {
+      const pct = Math.max(0, Math.min(100, (r.actual_cents / r.budget_cents) * 100));
+      const fill = el('div', 'meter-fill' + (r.over_budget ? ' over' : ''));
+      fill.style.width = pct + '%';
+      track.appendChild(fill);
+    }
+    row.appendChild(track);
+    box.appendChild(row);
+  }
+}
+
+function renderTrend(trend) {
+  // Table view is always built — it is the fallback when the CDN is unreachable
+  // and the accessible alternative to the plot.
+  const tbl = el('table');
+  const thead = el('thead');
+  const hr = el('tr');
+  for (const h of ['Month', 'Spent', 'Budgeted', 'Income']) {
+    const th = el('th', h === 'Month' ? '' : 'num', h);
+    hr.appendChild(th);
+  }
+  thead.appendChild(hr); tbl.appendChild(thead);
+  const tb = el('tbody');
+  for (const p of trend) {
+    const tr = el('tr');
+    tr.appendChild(el('td', null, monthLabel(p.month)));
+    tr.appendChild(el('td', 'num', money(p.spent_cents)));
+    tr.appendChild(el('td', 'num dim', p.budget_cents ? money(p.budget_cents) : '—'));
+    tr.appendChild(el('td', 'num dim', money(p.income_cents)));
+    tb.appendChild(tr);
+  }
+  tbl.appendChild(tb);
+  const holder = document.getElementById('trend-table');
+  holder.innerHTML = '';
+  holder.appendChild(tbl);
+
+  const box = document.getElementById('trend-box');
+  if (typeof Chart === 'undefined') {
+    // Offline: drop the canvas and promote the table. The swatch legend goes
+    // with it — the table's own column headers carry the same identity.
+    box.classList.add('hidden');
+    holder.classList.remove('hidden');
+    document.getElementById('trend-toggle').classList.add('hidden');
+    document.querySelectorAll('.legend span:not(.spacer)').forEach(n => n.classList.add('hidden'));
+    return;
+  }
+
+  const css = getComputedStyle(document.documentElement);
+  const v = n => css.getPropertyValue(n).trim();
+  const labels = trend.map(p => monthLabel(p.month));
+
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById('trend'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Spent', data: trend.map(p => p.spent_cents / 100),
+          borderColor: v('--series-1'), backgroundColor: v('--series-1'),
+          borderWidth: 2, pointRadius: 4, pointHoverRadius: 6,
+          pointBorderColor: v('--surface'), pointBorderWidth: 2, tension: 0 },
+        { label: 'Budgeted', data: trend.map(p => p.budget_cents / 100),
+          borderColor: v('--text-muted'), backgroundColor: v('--text-muted'),
+          borderWidth: 2, borderDash: [5, 4], pointRadius: 0, pointHoverRadius: 5, tension: 0 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },  // drawn in HTML above, so it survives no-JS styling
+        tooltip: {
+          backgroundColor: v('--surface'), titleColor: v('--text-primary'),
+          bodyColor: v('--text-secondary'), borderColor: v('--border'), borderWidth: 1,
+          padding: 10, displayColors: true, boxWidth: 8, boxHeight: 8, usePointStyle: true,
+          callbacks: { label: c => ' ' + c.dataset.label + ': ' + money(Math.round(c.parsed.y * 100)) },
+        },
+      },
+      scales: {
+        x: { grid: { display: false }, border: { color: v('--baseline') },
+             ticks: { color: v('--text-muted'), font: { size: 12 } } },
+        y: { // Not zero-based: month-to-month spend varies by a few percent, and a
+             // 0-based axis flattens the whole series into one indistinguishable line.
+             // Axis labels carry the absolute level so the truncation stays legible.
+             beginAtZero: false, grace: '15%',
+             grid: { color: v('--grid'), drawTicks: false },
+             border: { display: false },
+             ticks: { color: v('--text-muted'), font: { size: 12 }, padding: 8,
+                      callback: value => money(Math.round(value * 100), {whole:true}) } },
+      },
+    },
+  });
+}
+
+function renderTxns(txns) {
+  const sub = document.getElementById('txn-sub');
+  const box = document.getElementById('txns');
+  box.innerHTML = '';
+  if (!txns.length) {
+    sub.textContent = '';
+    box.appendChild(el('p', 'empty', 'No transactions this month.'));
+    return;
+  }
+  const net = txns.reduce((a, t) => a + t.amount_cents, 0);
+  sub.textContent = txns.length + ' this month · net ' + money(net);
+
+  const tbl = el('table');
+  const thead = el('thead'), hr = el('tr');
+  for (const h of ['Date', 'Description', 'Category', 'Account', 'Amount']) {
+    hr.appendChild(el('th', h === 'Amount' ? 'num' : '', h));
+  }
+  thead.appendChild(hr); tbl.appendChild(thead);
+  const tb = el('tbody');
+  for (const t of txns) {
+    const tr = el('tr');
+    tr.appendChild(el('td', 'dim', t.date));
+    tr.appendChild(el('td', null, t.description || '—'));
+    tr.appendChild(el('td', 'dim', t.category));
+    tr.appendChild(el('td', 'dim', t.account));
+    tr.appendChild(el('td', 'num ' + (t.amount_cents < 0 ? '' : 'pos'), money(t.amount_cents)));
+    tb.appendChild(tr);
+  }
+  tbl.appendChild(tb);
+  box.appendChild(tbl);
+}
+
+// ---- wiring ----
+document.getElementById('month-picker').addEventListener('change', e => load(e.target.value));
+document.getElementById('trend-toggle').addEventListener('click', () => {
+  const box = document.getElementById('trend-box');
+  const tbl = document.getElementById('trend-table');
+  const btn = document.getElementById('trend-toggle');
+  const showTable = box.classList.toggle('hidden');
+  tbl.classList.toggle('hidden', !showTable);
+  btn.textContent = showTable ? 'Chart view' : 'Table view';
+});
+document.getElementById('theme-toggle').addEventListener('click', () => {
+  const cur = document.documentElement.getAttribute('data-theme');
+  const dark = cur ? cur === 'dark'
+    : window.matchMedia('(prefers-color-scheme: dark)').matches;
+  document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark');
+  localStorage.setItem('budgit-theme', dark ? 'light' : 'dark');
+  if (state) renderTrend(state.trend); // chart colors are baked in at draw time
+});
+const saved = localStorage.getItem('budgit-theme');
+if (saved) document.documentElement.setAttribute('data-theme', saved);
+
+load();
+</script>
+</body>
+</html>
