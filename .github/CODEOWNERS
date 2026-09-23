@@ -1,0 +1,10 @@
+# Code owners for budgit.
+#
+# @mason-munnik owns every file in this repository. Combined with the branch
+# protection rule on main ("Require review from Code Owners"), this means no
+# pull request can merge without his approval.
+#
+# If you ever add narrower rules, put them BELOW this line — for CODEOWNERS the
+# last matching pattern wins, so a catch-all placed last would override them.
+
+* @mason-munnik
