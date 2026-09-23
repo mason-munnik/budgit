@@ -1,3 +1,3 @@
-module github.com/masonmunnik/budgit
+module github.com/mason-munnik/budgit
 
 go 1.26.5

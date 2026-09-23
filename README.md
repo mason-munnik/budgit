@@ -13,10 +13,10 @@ the cloud, and the bank connections.
 
 ## Install
 
-Requires [Go 1.21+](https://go.dev/dl/). Nothing else.
+Requires [Go 1.26+](https://go.dev/dl/). Nothing else.
 
 ```sh
-git clone https://github.com/masonmunnik/budgit.git
+git clone https://github.com/mason-munnik/budgit.git
 cd budgit
 go build -o budgit .
 ```
@@ -27,7 +27,7 @@ That's the whole install. Put the binary on your `PATH` if you like:
 sudo mv budgit /usr/local/bin/     # macOS / Linux
 ```
 
-Prefer not to clone? `go install github.com/masonmunnik/budgit@latest` works too.
+Prefer not to clone? `go install github.com/mason-munnik/budgit@latest` works too.
 
 ### Prebuilt binaries
 
