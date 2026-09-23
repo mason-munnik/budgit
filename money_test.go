@@ -142,3 +142,37 @@ func TestCheckLoopback(t *testing.T) {
 		}
 	}
 }
+
+// An opening balance must move the account balance without ever showing up
+// as income or spending in the report.
+func TestOpeningBalance(t *testing.T) {
+	db := &DB{
+		Accounts: []Account{
+			{ID: 1, Name: "Checking", Type: "checking", OpeningBalanceCents: 420000},
+			{ID: 2, Name: "Card", Type: "credit", OpeningBalanceCents: -49950},
+			{ID: 3, Name: "Fresh", Type: "cash"},
+		},
+		Categories: []Category{{ID: 1, Name: "Groceries", Kind: KindExpense}},
+		Transactions: []Transaction{
+			{ID: 1, Date: "2026-09-04", AccountID: 1, CategoryID: 1, AmountCents: -8431},
+		},
+	}
+
+	if got := db.AccountBalance(1); got != 411569 { // 4200.00 - 84.31
+		t.Errorf("balance = %d, want 411569", got)
+	}
+	if got := db.AccountBalance(2); got != -49950 { // no transactions
+		t.Errorf("credit balance = %d, want -49950", got)
+	}
+	if got := db.AccountBalance(3); got != 0 {
+		t.Errorf("fresh account balance = %d, want 0", got)
+	}
+
+	rep := BuildReport(db, "2026-09")
+	if rep.TotalIncomeCents != 0 {
+		t.Errorf("opening balance leaked into income: %d", rep.TotalIncomeCents)
+	}
+	if rep.TotalSpentCents != 8431 {
+		t.Errorf("spend = %d, want 8431", rep.TotalSpentCents)
+	}
+}

@@ -117,12 +117,8 @@ func buildDashboard(db *DB, month, path string) dashboard {
 		DataFile:    path,
 	}
 
-	bal := map[int]int64{}
-	for _, t := range db.Transactions {
-		bal[t.AccountID] += t.AmountCents
-	}
 	for _, a := range db.Accounts {
-		d.Accounts = append(d.Accounts, accountView{a.ID, a.Name, a.Type, bal[a.ID]})
+		d.Accounts = append(d.Accounts, accountView{a.ID, a.Name, a.Type, db.AccountBalance(a.ID)})
 	}
 	if d.Accounts == nil {
 		d.Accounts = []accountView{}

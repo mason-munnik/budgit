@@ -54,8 +54,9 @@ budgit serve                      # dashboard at http://localhost:8080
 
 | Command | What it does |
 |---|---|
-| `account add --name NAME [--type TYPE]` | Add an account (checking, savings, credit, cash) |
-| `account list` | List accounts with current balances |
+| `account add --name NAME [--type TYPE] [--balance AMT]` | Add an account (checking, savings, credit, cash) |
+| `account list` | List accounts with balances and net worth |
+| `account set-balance --account REF --amount AMT` | Set what an existing account should show right now |
 | `category add --name NAME --kind income\|expense` | Add a category |
 | `category list` | List categories |
 | `txn add --amount AMT [--date] [--account] [--category] [--desc]` | Record a transaction |
@@ -70,6 +71,33 @@ Accounts and categories can be referenced by name (case-insensitive; a unique
 substring is enough, so `--category Dining` finds "Dining Out") or by numeric ID.
 
 Dates are `YYYY-MM-DD`, months are `YYYY-MM`. Both default to today / this month.
+
+## Account balances
+
+An account's balance is its **opening balance** plus every transaction on it. Set
+the opening balance when you create the account:
+
+```sh
+budgit account add --name "Chase Checking" --type checking --balance 8500
+budgit account add --name "Amex Gold"      --type credit   --balance -499.50
+```
+
+For an account you already made, say what your bank shows you right now:
+
+```sh
+budgit account set-balance --account "Chase Checking" --amount 8500
+```
+
+That back-solves the opening balance so your existing transactions stay intact —
+if $84.31 of spending is already recorded, the opening balance becomes $8,584.31
+so the current balance reads exactly the $8,500 you typed. Re-run it any time you
+want to resync against your bank.
+
+Use a **negative** amount for money you owe (credit cards, loans). `account list`
+totals every account into a net worth line.
+
+An opening balance is deliberately **not** a transaction, so it never appears as
+income or spending in a report — it only moves the balance.
 
 ## How amounts work
 

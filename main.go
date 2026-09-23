@@ -15,8 +15,9 @@ Usage:
   budgit <command> [subcommand] [flags]
 
 Commands:
-  account add   --name NAME [--type TYPE]
+  account add   --name NAME [--type TYPE] [--balance AMT]
   account list
+  account set-balance --account REF --amount AMT
   category add  --name NAME --kind income|expense
   category list
   txn add       --amount AMT [--date YYYY-MM-DD] [--account REF] [--category REF] [--desc TEXT]
@@ -99,6 +100,7 @@ func cmdAccount(args []string) error {
 		fs := newFS("account add", &path)
 		name := fs.String("name", "", "account name (required)")
 		typ := fs.String("type", "checking", "account type: checking, savings, credit, cash")
+		balance := fs.String("balance", "", "current balance before any transactions, e.g. 4200 or -499.50 for a card you owe on")
 		fs.Parse(rest)
 		if strings.TrimSpace(*name) == "" {
 			return fmt.Errorf("account add requires --name")
@@ -112,13 +114,22 @@ func cmdAccount(args []string) error {
 				return fmt.Errorf("account %q already exists (id %d)", a.Name, a.ID)
 			}
 		}
-		a := Account{ID: db.NextAccountID, Name: strings.TrimSpace(*name), Type: *typ}
+		var opening int64
+		if strings.TrimSpace(*balance) != "" {
+			// Always explicit here: there is no category to infer a sign from,
+			// so "-499.50" means you owe and "4200" means you hold.
+			opening, _, err = ParseMoney(*balance)
+			if err != nil {
+				return err
+			}
+		}
+		a := Account{ID: db.NextAccountID, Name: strings.TrimSpace(*name), Type: *typ, OpeningBalanceCents: opening}
 		db.NextAccountID++
 		db.Accounts = append(db.Accounts, a)
 		if err := db.Save(); err != nil {
 			return err
 		}
-		fmt.Printf("Added account %d: %s (%s)\n", a.ID, a.Name, a.Type)
+		fmt.Printf("Added account %d: %s (%s), opening balance %s\n", a.ID, a.Name, a.Type, FormatMoney(a.OpeningBalanceCents))
 		return nil
 
 	case "list", "ls", "":
@@ -132,19 +143,51 @@ func cmdAccount(args []string) error {
 			fmt.Println("No accounts yet. Add one: budgit account add --name \"Chase Checking\"")
 			return nil
 		}
-		// Running balance per account is just the sum of its transactions.
-		bal := map[int]int64{}
-		for _, t := range db.Transactions {
-			bal[t.AccountID] += t.AmountCents
-		}
 		w := out()
-		fmt.Fprintln(w, "ID\tNAME\tTYPE\tBALANCE")
+		fmt.Fprintln(w, "ID\tNAME\tTYPE\tOPENING\tBALANCE")
+		var total int64
 		for _, a := range db.Accounts {
-			fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", a.ID, a.Name, a.Type, FormatMoney(bal[a.ID]))
+			b := db.AccountBalance(a.ID)
+			total += b
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n", a.ID, a.Name, a.Type,
+				FormatMoney(a.OpeningBalanceCents), FormatMoney(b))
 		}
+		fmt.Fprintf(w, "\t\t\t\t\n")
+		fmt.Fprintf(w, "\tNET WORTH\t\t\t%s\n", FormatMoney(total))
 		return w.Flush()
+	case "set-balance", "balance":
+		fs := newFS("account set-balance", &path)
+		acct := fs.String("account", "", "account name or ID (required)")
+		amount := fs.String("amount", "", "the balance the account should show right now (required)")
+		fs.Parse(rest)
+		if strings.TrimSpace(*acct) == "" || strings.TrimSpace(*amount) == "" {
+			return fmt.Errorf("account set-balance requires --account and --amount")
+		}
+		want, _, err := ParseMoney(*amount)
+		if err != nil {
+			return err
+		}
+		db, err := Load(path)
+		if err != nil {
+			return err
+		}
+		a, err := db.FindAccount(*acct)
+		if err != nil {
+			return err
+		}
+		// Solve for the opening balance that makes the CURRENT balance match
+		// what the user typed, so existing transactions stay untouched.
+		current := db.AccountBalance(a.ID)
+		fromTxns := current - a.OpeningBalanceCents
+		a.OpeningBalanceCents = want - fromTxns
+		if err := db.Save(); err != nil {
+			return err
+		}
+		fmt.Printf("%s balance set to %s (opening %s + %s in transactions)\n",
+			a.Name, FormatMoney(want), FormatMoney(a.OpeningBalanceCents), FormatMoney(fromTxns))
+		return nil
 	}
-	return fmt.Errorf("unknown account subcommand %q (want: add, list)", action)
+	return fmt.Errorf("unknown account subcommand %q (want: add, list, set-balance)", action)
 }
 
 // ---- category ----

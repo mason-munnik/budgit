@@ -20,6 +20,10 @@ type Account struct {
 	ID   int    `json:"id"`
 	Name string `json:"name"`
 	Type string `json:"type"` // checking, savings, credit, cash, ...
+	// OpeningBalanceCents is the account's balance before any recorded
+	// transaction. It is deliberately NOT a transaction: it must count toward
+	// the balance without ever appearing as income or spending in a report.
+	OpeningBalanceCents int64 `json:"opening_balance_cents"`
 }
 
 type Category struct {
@@ -204,6 +208,23 @@ func (db *DB) FindCategory(ref string) (*Category, error) {
 		return nil, fmt.Errorf("category %q is ambiguous: %s", ref, strings.Join(names, ", "))
 	}
 	return nil, fmt.Errorf("no category matching %q (try: budgit category list)", ref)
+}
+
+// AccountBalance is the opening balance plus every transaction on the account.
+func (db *DB) AccountBalance(id int) int64 {
+	var bal int64
+	for _, a := range db.Accounts {
+		if a.ID == id {
+			bal = a.OpeningBalanceCents
+			break
+		}
+	}
+	for _, t := range db.Transactions {
+		if t.AccountID == id {
+			bal += t.AmountCents
+		}
+	}
+	return bal
 }
 
 func (db *DB) AccountName(id int) string {
