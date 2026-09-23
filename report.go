@@ -35,7 +35,9 @@ type Report struct {
 // or activity in the month gets a row; silent categories are omitted so the
 // report stays as short as the month actually was.
 func BuildReport(db *DB, month string) Report {
-	rep := Report{Month: month}
+	// Expenses/Income must marshal as [] not null: a quiet month appends
+	// nothing, and the dashboard indexes .length on them directly.
+	rep := Report{Month: month, Expenses: []ReportRow{}, Income: []ReportRow{}}
 
 	sums := map[int]int64{} // categoryID -> signed cents
 	counts := map[int]int{}
