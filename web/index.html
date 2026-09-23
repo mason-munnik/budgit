@@ -128,6 +128,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; padding-
 td.dim { color: var(--text-secondary); }
 .scroll { overflow-x: auto; }
 .empty { color: var(--text-muted); font-size: 14px; padding: 8px 0; }
+#error { border-color: var(--critical); color: var(--critical); font-size: 14px; }
+#error code { color: inherit; }
 .hidden { display: none; }
 footer { color: var(--text-muted); font-size: 12px; margin-top: 28px; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
@@ -142,7 +144,15 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
     <button class="ghost" id="theme-toggle" title="Toggle light/dark">◐</button>
   </header>
 
+  <div class="card hidden" id="error"></div>
+
   <div class="tiles" id="tiles"></div>
+
+  <section class="card">
+    <h2>Accounts</h2>
+    <p class="sub">Current balance of each account, including its opening balance.</p>
+    <div class="scroll"><div id="accounts"></div></div>
+  </section>
 
   <section class="card">
     <h2>Budget vs actual</h2>
@@ -201,16 +211,31 @@ const el = (t, cls, txt) => {
 let chart = null;
 let state = null;
 
+function showError(msg) {
+  const box = document.getElementById('error');
+  box.innerHTML = '';
+  box.appendChild(el('h2', null, 'Could not draw the dashboard'));
+  box.appendChild(el('p', 'sub', msg));
+  box.classList.remove('hidden');
+}
+
 async function load(month) {
   const url = '/api/dashboard' + (month ? '?month=' + encodeURIComponent(month) : '');
-  const res = await fetch(url);
-  if (!res.ok) { alert('budgit: ' + await res.text()); return; }
-  state = await res.json();
-  render();
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(await res.text());
+    state = await res.json();
+    render();
+  } catch (e) {
+    // Without this the throw becomes a silent unhandled rejection and the
+    // page just stops painting halfway down.
+    showError(e.message || String(e));
+  }
 }
 
 function render() {
   const d = state, rep = d.report;
+  document.getElementById('error').classList.add('hidden');
   document.getElementById('month-label').textContent = monthLabel(d.month);
   document.getElementById('datafile').textContent = d.data_file;
 
@@ -224,6 +249,7 @@ function render() {
   }
 
   renderTiles(d, rep);
+  renderAccounts(d.accounts);
   renderMeters(rep);
   renderTrend(d.trend);
   renderTxns(d.transactions);
@@ -251,14 +277,51 @@ function renderTiles(d, rep) {
   }
 }
 
-function renderMeters(rep) {
-  const box = document.getElementById('meters');
+function renderAccounts(accounts) {
+  accounts = accounts || [];
+  const box = document.getElementById('accounts');
   box.innerHTML = '';
-  if (!rep.expenses.length) {
-    box.appendChild(el('p', 'empty', 'No expense activity or budgets for this month.'));
+  if (!accounts.length) {
+    box.appendChild(el('p', 'empty',
+      'No accounts yet \u2014 add one with: budgit account add --name "Chase Checking"'));
     return;
   }
-  for (const r of rep.expenses) {
+  const tbl = el('table');
+  const thead = el('thead'), hr = el('tr');
+  for (const h of ['Account', 'Type', 'Balance']) {
+    hr.appendChild(el('th', h === 'Balance' ? 'num' : '', h));
+  }
+  thead.appendChild(hr); tbl.appendChild(thead);
+  const tb = el('tbody');
+  let total = 0;
+  for (const a of accounts) {
+    total += a.balance_cents;
+    const tr = el('tr');
+    tr.appendChild(el('td', null, a.name));
+    tr.appendChild(el('td', 'dim', a.type));
+    tr.appendChild(el('td', 'num ' + (a.balance_cents < 0 ? 'neg' : 'pos'), money(a.balance_cents)));
+    tb.appendChild(tr);
+  }
+  // Net worth mirrors `budgit account list`: every balance summed, cards included.
+  const tr = el('tr');
+  tr.appendChild(el('th', null, 'Net worth'));
+  tr.appendChild(el('td', null, ''));
+  tr.appendChild(el('th', 'num ' + (total < 0 ? 'neg' : 'pos'), money(total)));
+  tb.appendChild(tr);
+  tbl.appendChild(tb);
+  box.appendChild(tbl);
+}
+
+function renderMeters(rep) {
+  const rows = rep.expenses || [];
+  const box = document.getElementById('meters');
+  box.innerHTML = '';
+  if (!rows.length) {
+    box.appendChild(el('p', 'empty', 'No budgets or expense activity for this month '
+      + '\u2014 set one with: budgit budget set --category Groceries --amount 600'));
+    return;
+  }
+  for (const r of rows) {
     const row = el('div', 'meter-row');
 
     const name = el('div', 'meter-name');
@@ -285,6 +348,7 @@ function renderMeters(rep) {
 }
 
 function renderTrend(trend) {
+  trend = trend || [];
   // Table view is always built — it is the fallback when the CDN is unreachable
   // and the accessible alternative to the plot.
   const tbl = el('table');
@@ -368,12 +432,14 @@ function renderTrend(trend) {
 }
 
 function renderTxns(txns) {
+  txns = txns || [];
   const sub = document.getElementById('txn-sub');
   const box = document.getElementById('txns');
   box.innerHTML = '';
   if (!txns.length) {
     sub.textContent = '';
-    box.appendChild(el('p', 'empty', 'No transactions this month.'));
+    box.appendChild(el('p', 'empty', 'No transactions this month \u2014 add one with: '
+      + 'budgit txn add --amount 24.99 --account "Veridian Checking" --category Groceries'));
     return;
   }
   const net = txns.reduce((a, t) => a + t.amount_cents, 0);
