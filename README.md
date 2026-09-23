@@ -12,11 +12,32 @@ cd budgit
 go build -o budgit .
 ```
 
+On Windows, name the output `budgit.exe` instead — `go build -o budgit .` writes exactly the name you give it, with no extension, and Windows will not run that file:
+
+```powershell
+go build -o budgit.exe .
+```
+
 That is the whole install. To run it from anywhere:
+
+**macOS and Linux**
 
 ```sh
 sudo mv budgit /usr/local/bin/
 ```
+
+**Windows**
+
+Put the exe in a folder of your own and add that folder to your `PATH` once:
+
+```powershell
+mkdir "$env:LOCALAPPDATA\Programs\budgit"
+move budgit.exe "$env:LOCALAPPDATA\Programs\budgit\"
+[Environment]::SetEnvironmentVariable(
+  "Path", $env:Path + ";$env:LOCALAPPDATA\Programs\budgit", "User")
+```
+
+Open a new terminal afterwards. Every example below then works as written in PowerShell or Command Prompt — you type `budgit`, not `budgit.exe`. The one difference is line continuations: where an example breaks a long command across lines with a trailing `\`, use a backtick `` ` `` in PowerShell, a `^` in Command Prompt, or just put the whole command on one line.
 
 ## Set up your accounts and categories
 
@@ -95,11 +116,17 @@ You can use a short name instead of the full one. `--category Dining` will find 
 
 ## Where your data lives
 
-Everything is in `~/.budgit/budgit.json`. To back it up, copy that file somewhere safe.
+Everything is in one file: `~/.budgit/budgit.json` on macOS and Linux, and `%USERPROFILE%\.budgit\budgit.json` on Windows. To back it up, copy that file somewhere safe.
 
 ```sh
 cp ~/.budgit/budgit.json ~/Dropbox/budgit-backup.json
 ```
+
+```powershell
+copy "$env:USERPROFILE\.budgit\budgit.json" "$env:USERPROFILE\Dropbox\budgit-backup.json"
+```
+
+Set `BUDGIT_FILE` to keep the file somewhere else entirely.
 
 To start over, delete it. The next command makes a fresh one.
 

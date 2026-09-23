@@ -13,6 +13,7 @@ targets=(
   linux/amd64
   linux/arm64     # Raspberry Pi 4/5, ARM servers
   windows/amd64
+  windows/arm64   # Surface / Snapdragon ARM laptops
 )
 
 for t in "${targets[@]}"; do
