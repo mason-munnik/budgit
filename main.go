@@ -557,6 +557,11 @@ func bar(pct float64) string {
 	if filled < 0 {
 		filled = 0
 	}
+	// Any real spending shows at least one cell, so a bar is never empty
+	// while the percentage beside it reads non-zero.
+	if filled == 0 && pct > 0 {
+		filled = 1
+	}
 	if filled > width {
 		filled = width
 	}
