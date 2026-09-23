@@ -1,6 +1,6 @@
 # budgit
 
-A personal budgeting tool that runs on your own computer. Your data stays in one file on your disk. Nothing is sent anywhere.
+An open source and private personal budgeting tool that runs on your own computer. Your data stays in one file on your disk. Nothing is sent anywhere.
 
 ## Install
 
