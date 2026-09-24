@@ -23,6 +23,7 @@ Commands:
   txn add       --amount AMT [--date YYYY-MM-DD] [--account REF] [--category REF] [--desc TEXT]
   txn list      [--month YYYY-MM] [--account REF] [--category REF] [--uncategorized] [--limit N]
   txn categorize ID CATEGORY
+  txn delete    ID
   budget set    --category REF --amount AMT [--month YYYY-MM]
   budget list   [--month YYYY-MM]
   report        [--month YYYY-MM]
@@ -77,6 +78,18 @@ func newFS(name string, path *string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	fs.StringVar(path, "file", DefaultPath(), "path to the budgit data file")
 	return fs
+}
+
+// splitPositional divides args at the first flag, so a subcommand can take
+// positional arguments and still understand --file after them.
+func splitPositional(args []string) (pos, flags []string) {
+	for i, a := range args {
+		if strings.HasPrefix(a, "-") {
+			return pos, args[i:]
+		}
+		pos = append(pos, a)
+	}
+	return pos, nil
 }
 
 func sub(args []string) (string, []string) {
@@ -163,28 +176,20 @@ func cmdAccount(args []string) error {
 		if strings.TrimSpace(*acct) == "" || strings.TrimSpace(*amount) == "" {
 			return fmt.Errorf("account set-balance requires --account and --amount")
 		}
-		want, _, err := ParseMoney(*amount)
-		if err != nil {
-			return err
-		}
 		db, err := Load(path)
 		if err != nil {
 			return err
 		}
-		a, err := db.FindAccount(*acct)
+		a, fromTxns, err := SetAccountBalance(db, *acct, *amount)
 		if err != nil {
 			return err
 		}
-		// Solve for the opening balance that makes the CURRENT balance match
-		// what the user typed, so existing transactions stay untouched.
-		current := db.AccountBalance(a.ID)
-		fromTxns := current - a.OpeningBalanceCents
-		a.OpeningBalanceCents = want - fromTxns
 		if err := db.Save(); err != nil {
 			return err
 		}
 		fmt.Printf("%s balance set to %s (opening %s + %s in transactions)\n",
-			a.Name, FormatMoney(want), FormatMoney(a.OpeningBalanceCents), FormatMoney(fromTxns))
+			a.Name, FormatMoney(db.AccountBalance(a.ID)),
+			FormatMoney(a.OpeningBalanceCents), FormatMoney(fromTxns))
 		return nil
 	}
 	return fmt.Errorf("unknown account subcommand %q (want: add, list, set-balance)", action)
@@ -204,6 +209,7 @@ func cmdCategory(args []string) error {
 		if strings.TrimSpace(*name) == "" {
 			return fmt.Errorf("category add requires --name")
 		}
+		// Checked here rather than in AddCategory so the message names the flag.
 		k := strings.ToLower(strings.TrimSpace(*kind))
 		if k != KindIncome && k != KindExpense {
 			return fmt.Errorf("--kind must be %q or %q, got %q", KindIncome, KindExpense, *kind)
@@ -212,14 +218,10 @@ func cmdCategory(args []string) error {
 		if err != nil {
 			return err
 		}
-		for _, c := range db.Categories {
-			if strings.EqualFold(c.Name, *name) {
-				return fmt.Errorf("category %q already exists (id %d)", c.Name, c.ID)
-			}
+		c, err := AddCategory(db, *name, k)
+		if err != nil {
+			return err
 		}
-		c := Category{ID: db.NextCategoryID, Name: strings.TrimSpace(*name), Kind: k}
-		db.NextCategoryID++
-		db.Categories = append(db.Categories, c)
 		if err := db.Save(); err != nil {
 			return err
 		}
@@ -265,60 +267,24 @@ func cmdTxn(args []string) error {
 		if strings.TrimSpace(*amount) == "" {
 			return fmt.Errorf("txn add requires --amount")
 		}
-		d, err := ValidateDate(*date)
-		if err != nil {
-			return err
-		}
 		db, err := Load(path)
 		if err != nil {
 			return err
 		}
-		if strings.TrimSpace(*acct) == "" {
-			if len(db.Accounts) != 1 {
-				return fmt.Errorf("txn add requires --account")
-			}
-			*acct = db.Accounts[0].Name // unambiguous when there is exactly one
+		// Checked here rather than in AddTransaction so the message can name the flag.
+		if strings.TrimSpace(*acct) == "" && len(db.Accounts) != 1 {
+			return fmt.Errorf("txn add requires --account")
 		}
-		a, err := db.FindAccount(*acct)
+		t, err := AddTransaction(db, *date, *acct, *cat, *desc, *amount)
 		if err != nil {
 			return err
 		}
-		cents, explicit, err := ParseMoney(*amount)
-		if err != nil {
-			return err
-		}
-
-		catID := 0
-		if strings.TrimSpace(*cat) != "" {
-			c, err := db.FindCategory(*cat)
-			if err != nil {
-				return err
-			}
-			catID = c.ID
-			if !explicit {
-				// Unsigned: let the category decide which way the money moved.
-				if c.Kind == KindExpense {
-					cents = -abs(cents)
-				} else {
-					cents = abs(cents)
-				}
-			}
-		} else if !explicit {
-			// No category to infer from; an unsigned amount is assumed spending.
-			cents = -abs(cents)
-		}
-
-		t := Transaction{
-			ID: db.NextTransactionID, Date: d, AccountID: a.ID,
-			CategoryID: catID, Description: strings.TrimSpace(*desc), AmountCents: cents,
-		}
-		db.NextTransactionID++
-		db.Transactions = append(db.Transactions, t)
 		if err := db.Save(); err != nil {
 			return err
 		}
 		fmt.Printf("Added txn %d: %s  %s  %s  %s  [%s]\n",
-			t.ID, t.Date, FormatMoney(t.AmountCents), a.Name, t.Description, db.CategoryName(t.CategoryID))
+			t.ID, t.Date, FormatMoney(t.AmountCents), db.AccountName(t.AccountID),
+			t.Description, db.CategoryName(t.CategoryID))
 		return nil
 
 	case "list", "ls", "":
@@ -398,17 +364,37 @@ func cmdTxn(args []string) error {
 		}
 		return nil
 
+	case "delete", "del", "rm":
+		// Positional: txn delete ID  (flags may follow)
+		pos, flags := splitPositional(rest)
+		fs := newFS("txn delete", &path)
+		fs.Parse(flags)
+		if len(pos) != 1 {
+			return fmt.Errorf("usage: budgit txn delete <txn-id>")
+		}
+		id, err := strconv.Atoi(pos[0])
+		if err != nil {
+			return fmt.Errorf("transaction id %q is not a number", pos[0])
+		}
+		db, err := Load(path)
+		if err != nil {
+			return err
+		}
+		gone, err := DeleteTransaction(db, id)
+		if err != nil {
+			return err
+		}
+		if err := db.Save(); err != nil {
+			return err
+		}
+		fmt.Printf("Deleted txn %d: %s  %s  %s  %s  [%s]\n",
+			gone.ID, gone.Date, FormatMoney(gone.AmountCents), db.AccountName(gone.AccountID),
+			gone.Description, db.CategoryName(gone.CategoryID))
+		return nil
+
 	case "categorize", "recategorize", "cat":
 		// Positional: txn categorize ID CATEGORY  (flags may follow)
-		var pos []string
-		var flags []string
-		for i, a := range rest {
-			if strings.HasPrefix(a, "-") {
-				flags = rest[i:]
-				break
-			}
-			pos = append(pos, a)
-		}
+		pos, flags := splitPositional(rest)
 		fs := newFS("txn categorize", &path)
 		fs.Parse(flags)
 		if len(pos) < 2 {
@@ -422,29 +408,18 @@ func cmdTxn(args []string) error {
 		if err != nil {
 			return err
 		}
-		t := db.FindTransaction(id)
-		if t == nil {
-			return fmt.Errorf("no transaction with id %d", id)
-		}
-		c, err := db.FindCategory(strings.Join(pos[1:], " "))
+		t, was, err := CategorizeTransaction(db, id, strings.Join(pos[1:], " "))
 		if err != nil {
 			return err
-		}
-		was := db.CategoryName(t.CategoryID)
-		t.CategoryID = c.ID
-		// Recategorising across kinds flips which way the money should point.
-		if c.Kind == KindExpense && t.AmountCents > 0 {
-			t.AmountCents = -t.AmountCents
-		} else if c.Kind == KindIncome && t.AmountCents < 0 {
-			t.AmountCents = -t.AmountCents
 		}
 		if err := db.Save(); err != nil {
 			return err
 		}
-		fmt.Printf("Txn %d: %s -> %s  (%s %s)\n", t.ID, was, c.Name, t.Date, FormatMoney(t.AmountCents))
+		fmt.Printf("Txn %d: %s -> %s  (%s %s)\n",
+			t.ID, was, db.CategoryName(t.CategoryID), t.Date, FormatMoney(t.AmountCents))
 		return nil
 	}
-	return fmt.Errorf("unknown txn subcommand %q (want: add, list, categorize)", action)
+	return fmt.Errorf("unknown txn subcommand %q (want: add, list, categorize, delete)", action)
 }
 
 // ---- budget ----
@@ -462,24 +437,14 @@ func cmdBudget(args []string) error {
 		if strings.TrimSpace(*cat) == "" || strings.TrimSpace(*amount) == "" {
 			return fmt.Errorf("budget set requires --category and --amount")
 		}
-		m, err := ValidateMonth(*month)
-		if err != nil {
-			return err
-		}
-		cents, _, err := ParseMoney(*amount)
-		if err != nil {
-			return err
-		}
-		cents = abs(cents) // a budget is an allowance, always positive
 		db, err := Load(path)
 		if err != nil {
 			return err
 		}
-		c, err := db.FindCategory(*cat)
+		c, m, cents, err := SetCategoryBudget(db, *cat, *month, *amount)
 		if err != nil {
 			return err
 		}
-		db.SetBudget(c.ID, m, cents)
 		if err := db.Save(); err != nil {
 			return err
 		}

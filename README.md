@@ -72,6 +72,12 @@ You do not need to write a minus sign. If the category is an expense, the money 
 budgit txn add --category Groceries --desc "Returned milk" --amount +12.49
 ```
 
+Typed one in wrong? Delete it by ID — `budgit txn list` shows the IDs:
+
+```sh
+budgit txn delete 42
+```
+
 The date defaults to today. You can leave out `--account` if you only have one.
 
 ## Set budgets and see how you did
@@ -91,7 +97,28 @@ budgit serve
 
 Then open http://localhost:8080 in your browser. Press ctrl+c to stop it.
 
-The dashboard shows your totals, how each category is doing against its budget, a spending chart, and the month's transactions. It is read only. To change anything, use the commands above.
+The dashboard shows your totals, how each category is doing against its budget, a spending chart, and the month's transactions.
+
+You can also enter data there, so you do not have to keep typing commands:
+
+- **Add a transaction** — the "+ Add transaction" button under the transactions list. The form stays open after each one and keeps the date and account, so a batch of receipts goes in quickly. The amount field follows the same rule as the CLI: unsigned takes its direction from the category, `+` in front records a refund.
+- **Delete a transaction** — the × at the end of any row, then confirm.
+- **Change a transaction's category** — click the category on any row and pick a new one.
+- **Set an account balance** — the "Set" button beside any balance.
+- **Set a budget** — click the figures on any row of "Budget vs actual". For a category with no row yet, use the "Set a budget" button. Budgets are per month, and apply to the month you are looking at.
+- **Add a category** — the "+ Add category" button on the same card.
+
+Adding accounts is still done from the command line, as is budgeting an income category. Changes made in the browser are written straight to your data file, so `budgit report` sees them immediately.
+
+The dashboard binds to localhost only and has no password, so it refuses any request that did not come from its own page.
+
+## Moving a transaction between categories
+
+```sh
+budgit txn categorize 42 Groceries
+```
+
+If the new category points money the other way, the amount flips to match — moving a purchase into an income category makes it an inflow. If both categories are the same kind the amount is left alone, so a refund filed under the wrong expense category stays a refund.
 
 ## All the commands
 
@@ -104,6 +131,7 @@ budgit category list        list categories
 budgit txn add              record a transaction
 budgit txn list             list transactions
 budgit txn categorize       change a transaction's category
+budgit txn delete           delete a transaction
 budgit budget set           set a monthly budget
 budgit budget list          list budgets
 budgit report               budget vs actual for a month

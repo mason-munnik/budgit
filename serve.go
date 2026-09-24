@@ -7,11 +7,18 @@ import (
 	iofs "io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
+
+// dbMu serializes the load -> mutate -> save sequence. Two overlapping writes
+// would otherwise each read the file, apply their own change, and write back —
+// and whichever saved last would silently erase the other.
+var dbMu sync.Mutex
 
 //go:embed web
 var webFS embed.FS
@@ -39,6 +46,7 @@ type dashboard struct {
 	Month           string        `json:"month"`
 	GeneratedAt     string        `json:"generated_at"`
 	Accounts        []accountView `json:"accounts"`
+	Categories      []Category    `json:"categories"`
 	Report          Report        `json:"report"`
 	Transactions    []txnView     `json:"transactions"`
 	Trend           []MonthTotal  `json:"trend"`
@@ -63,9 +71,14 @@ func cmdServe(args []string) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/dashboard", func(w http.ResponseWriter, r *http.Request) {
+		// Read under the same lock as writes, so a GET never lands between a
+		// mutation and its save.
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
 		db, err := Load(path)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		month := r.URL.Query().Get("month")
@@ -74,17 +87,40 @@ func cmdServe(args []string) error {
 		}
 		m, err := ValidateMonth(month)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(buildDashboard(db, m, path)); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
+		writeJSON(w, buildDashboard(db, m, path))
 	})
+
+	// Every mutation the dashboard can perform. Each one answers with a freshly
+	// built dashboard so the page re-renders from a single round trip.
+	mux.HandleFunc("/api/txn/add", writeHandler(path, func(db *DB, req writeRequest) error {
+		_, err := AddTransaction(db, req.Date, req.Account, req.Category, req.Description, req.Amount)
+		return err
+	}))
+	mux.HandleFunc("/api/txn/delete", writeHandler(path, func(db *DB, req writeRequest) error {
+		_, err := DeleteTransaction(db, req.ID)
+		return err
+	}))
+	mux.HandleFunc("/api/txn/categorize", writeHandler(path, func(db *DB, req writeRequest) error {
+		_, _, err := CategorizeTransaction(db, req.ID, req.Category)
+		return err
+	}))
+	mux.HandleFunc("/api/account/balance", writeHandler(path, func(db *DB, req writeRequest) error {
+		_, _, err := SetAccountBalance(db, req.Account, req.Amount)
+		return err
+	}))
+	mux.HandleFunc("/api/category/add", writeHandler(path, func(db *DB, req writeRequest) error {
+		_, err := AddCategory(db, req.Name, req.Kind)
+		return err
+	}))
+	mux.HandleFunc("/api/budget/set", writeHandler(path, func(db *DB, req writeRequest) error {
+		// The budget lands on the month the page is showing, which is the same
+		// month the response is rebuilt for.
+		_, _, _, err := SetCategoryBudget(db, req.Category, req.Month, req.Amount)
+		return err
+	}))
 
 	// Serve the embedded web/ directory at the root.
 	content, err := iofs.Sub(webFS, "web")
@@ -123,6 +159,10 @@ func buildDashboard(db *DB, month, path string) dashboard {
 	if d.Accounts == nil {
 		d.Accounts = []accountView{}
 	}
+
+	// The report only carries categories with a budget or activity; the entry
+	// form needs every category that exists.
+	d.Categories = append([]Category{}, db.Categories...)
 
 	db.SortTransactions()
 	for _, t := range db.Transactions {
@@ -183,6 +223,119 @@ func latestMonth(db *DB) string {
 		return CurrentMonth()
 	}
 	return best
+}
+
+// writeRequest is the one envelope every mutating endpoint accepts; an endpoint
+// simply ignores the fields it has no use for. Amounts stay strings all the way
+// to ParseMoney, so "$1,299", "84.31" and "+24.99" mean the same thing here as
+// they do on the command line.
+type writeRequest struct {
+	Month       string `json:"month"`
+	Date        string `json:"date"`
+	Account     string `json:"account"`
+	Category    string `json:"category"`
+	Description string `json:"description"`
+	Amount      string `json:"amount"`
+	Name        string `json:"name"`
+	Kind        string `json:"kind"`
+	ID          int    `json:"id"`
+}
+
+// writeHandler wraps one mutation with the checks every write shares: POST only,
+// same-origin only, then load -> apply -> save under the lock.
+func writeHandler(path string, apply func(*DB, writeRequest) error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeErr(w, http.StatusMethodNotAllowed, "use POST")
+			return
+		}
+		if err := checkSameOrigin(r); err != nil {
+			writeErr(w, http.StatusForbidden, err.Error())
+			return
+		}
+
+		var req writeRequest
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, "cannot read request: "+err.Error())
+			return
+		}
+
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
+		db, err := Load(path)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		// A rejected mutation leaves db untouched and unsaved, so a bad
+		// category name costs nothing.
+		if err := apply(db, req); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := db.Save(); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		month := req.Month
+		if month == "" {
+			month = latestMonth(db)
+		}
+		m, err := ValidateMonth(month)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, buildDashboard(db, m, path))
+	}
+}
+
+// checkSameOrigin stops another site open in the same browser from driving this
+// server. budgit has no authentication: before writes existed the worst a hostile
+// page could do was fail to read the JSON, but a mutation endpoint it could reach
+// would let it edit your finances outright.
+func checkSameOrigin(r *http.Request) error {
+	// A cross-origin <form> or no-preflight fetch can only send the form
+	// encodings or text/plain. Insisting on JSON forces a CORS preflight that
+	// this server never answers.
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(strings.ToLower(ct), "application/json") {
+		return fmt.Errorf("Content-Type must be application/json")
+	}
+	// Sent by current browsers; "none" means the user drove it directly.
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+		return fmt.Errorf("cross-origin request refused")
+	}
+	if origin := r.Header.Get("Origin"); origin != "" {
+		u, err := url.Parse(origin)
+		if err != nil || u.Host != r.Host {
+			return fmt.Errorf("cross-origin request refused")
+		}
+	}
+	return nil
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// writeErr answers in JSON so the dashboard can show the same message the CLI
+// would have printed, rather than a wall of plain text.
+func writeErr(w http.ResponseWriter, code int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
 func checkLoopback(addr string) error {
