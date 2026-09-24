@@ -41,6 +41,10 @@ type Transaction struct {
 	CategoryID  int    `json:"category_id"` // 0 == uncategorized
 	Description string `json:"description"`
 	AmountCents int64  `json:"amount_cents"`
+	// ExternalID is the bank's own id for an imported row, and is what makes a
+	// re-import a no-op. Empty for anything entered by hand — omitempty keeps it
+	// out of files that have never been imported into.
+	ExternalID string `json:"external_id,omitempty"`
 }
 
 // Budget is a positive monthly allowance for one category.
@@ -255,6 +259,18 @@ func (db *DB) CategoryByID(id int) *Category {
 		}
 	}
 	return nil
+}
+
+// ExternalIDs is the set of bank ids already imported, built once per import so
+// membership is a map lookup per row rather than a rescan.
+func (db *DB) ExternalIDs() map[string]bool {
+	seen := make(map[string]bool, len(db.Transactions))
+	for _, t := range db.Transactions {
+		if t.ExternalID != "" {
+			seen[t.ExternalID] = true
+		}
+	}
+	return seen
 }
 
 func (db *DB) FindTransaction(id int) *Transaction {

@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -24,6 +25,7 @@ Commands:
   txn list      [--month YYYY-MM] [--account REF] [--category REF] [--uncategorized] [--limit N]
   txn categorize ID CATEGORY
   txn delete    ID
+  txn import    PATH.csv --account REF [--dry-run] [--invert|--no-invert]
   budget set    --category REF --amount AMT [--month YYYY-MM]
   budget list   [--month YYYY-MM]
   report        [--month YYYY-MM]
@@ -37,6 +39,14 @@ Amounts:
 
 Accounts and categories may be referenced by name (case-insensitive, unique
 substring is enough) or by numeric ID.
+
+Importing:
+  "txn import" reads a CSV exported from your bank. It works out the delimiter,
+  the header row and how the bank writes amounts; --dry-run shows you what it
+  worked out without saving. Slashed dates are read month-first (US style).
+  Re-running the same file imports nothing: rows are matched on the bank's own
+  transaction id. Name columns yourself with --date-col, --amount-col,
+  --debit-col, --credit-col, --desc-col, --category-col, --id-col, --type-col.
 
 Data lives in ~/.budgit/budgit.json — override with --file or $BUDGIT_FILE.
 `
@@ -392,6 +402,61 @@ func cmdTxn(args []string) error {
 			gone.Description, db.CategoryName(gone.CategoryID))
 		return nil
 
+	case "import":
+		pos, flags := splitPositional(rest)
+		fs := newFS("txn import", &path)
+		var opts importOptions
+		opts.Cols = map[string]string{}
+		acct := fs.String("account", "", "account the file belongs to (required unless you have exactly one)")
+		fs.BoolVar(&opts.DryRun, "dry-run", false, "show what would be imported, save nothing")
+		fs.BoolVar(&opts.Invert, "invert", false, "flip every sign (card exports where purchases are positive)")
+		fs.BoolVar(&opts.NoInvert, "no-invert", false, "confirm the signs are already correct")
+		fs.BoolVar(&opts.NoCategory, "no-category", false, "ignore the file's category column")
+		fs.Var((*stringList)(&opts.Maps), "map", "map a bank category onto one of yours, e.g. \"Restaurants & Dining=Eating-Out\" (repeatable)")
+		fs.StringVar(&opts.Delimiter, "delimiter", "", "field separator: , ; tab pipe (default: sniffed)")
+		fs.StringVar(&opts.Decimal, "decimal", "", "decimal separator: dot or comma (default: sniffed)")
+		fs.StringVar(&opts.DateFormat, "date-format", "", "Go time layout, e.g. 02/01/2006 for day-first dates")
+		for _, c := range []struct{ flag, help string }{
+			{"date", "date"}, {"amount", "signed amount"}, {"debit", "debit"}, {"credit", "credit"},
+			{"desc", "description"}, {"category", "category"}, {"id", "unique id"}, {"type", "debit/credit type"},
+		} {
+			field := c.flag
+			if field == "id" {
+				field = "extid"
+			}
+			fs.Var(colFlag{opts.Cols, field}, c.flag+"-col", "name of the "+c.help+" column")
+		}
+		fs.Parse(flags)
+
+		if len(pos) != 1 {
+			return fmt.Errorf("usage: budgit txn import <file.csv> --account REF")
+		}
+		db, err := Load(path)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(*acct) == "" && len(db.Accounts) != 1 {
+			return fmt.Errorf("txn import requires --account")
+		}
+		if strings.TrimSpace(*acct) == "" {
+			*acct = db.Accounts[0].Name
+		}
+		a, err := db.FindAccount(*acct)
+		if err != nil {
+			return err
+		}
+		res, err := ImportCSV(db, pos[0], a.ID, opts)
+		if err != nil {
+			return err
+		}
+		if !opts.DryRun && res.Imported > 0 {
+			if err := db.Save(); err != nil {
+				return err
+			}
+		}
+		printImport(db, a, res, opts.DryRun)
+		return nil
+
 	case "categorize", "recategorize", "cat":
 		// Positional: txn categorize ID CATEGORY  (flags may follow)
 		pos, flags := splitPositional(rest)
@@ -419,7 +484,99 @@ func cmdTxn(args []string) error {
 			t.ID, was, db.CategoryName(t.CategoryID), t.Date, FormatMoney(t.AmountCents))
 		return nil
 	}
-	return fmt.Errorf("unknown txn subcommand %q (want: add, list, categorize, delete)", action)
+	return fmt.Errorf("unknown txn subcommand %q (want: add, list, categorize, delete, import)", action)
+}
+
+// stringList collects a flag given more than once, like --map.
+type stringList []string
+
+func (l *stringList) String() string     { return strings.Join(*l, ", ") }
+func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
+
+// colFlag writes one --*-col override into the shared map.
+type colFlag struct {
+	into  map[string]string
+	field string
+}
+
+func (c colFlag) String() string     { return c.into[c.field] }
+func (c colFlag) Set(v string) error { c.into[c.field] = v; return nil }
+
+// printImport reports what the file turned out to be and what came of it.
+// Every skipped row is accounted for: a silent drop is how an import quietly
+// loses a paycheck.
+func printImport(db *DB, a *Account, res *importResult, dry bool) {
+	fmt.Println(res.Dialect.Summary())
+	fmt.Printf("\nRead %d rows from %s\n\n", res.Rows, filepath.Base(res.Path))
+
+	if dry {
+		for _, p := range res.Preview {
+			fmt.Printf("  %s  %-34s %12s  %s\n",
+				p.Date, truncate(p.Desc, 34), FormatMoney(p.Cents), p.Category)
+		}
+		if n := res.Imported - len(res.Preview); n > 0 {
+			fmt.Printf("  ... and %d more\n", n)
+		}
+		fmt.Println()
+	}
+
+	verb := "imported"
+	if dry {
+		verb = "would import"
+	}
+	w := out()
+	fmt.Fprintf(w, "  %s\t%d\n", verb, res.Imported)
+	if skipped := res.Pending + res.Junk + res.Zero; skipped > 0 {
+		fmt.Fprintf(w, "  skipped\t%d\t(%s)\n", skipped, skipDetail(res))
+	}
+	if res.Duplicates > 0 {
+		fmt.Fprintf(w, "  already present\t%d\n", res.Duplicates)
+	}
+	if res.Matched > 0 {
+		fmt.Fprintf(w, "  matched\t%d\t%s already recorded, same day and amount\n",
+			res.Matched, plural(res.Matched, "row", "rows"))
+	}
+	fmt.Fprintf(w, "  categorized\t%d\n", res.Categorized)
+	if unc := res.Imported - res.Categorized; unc > 0 {
+		fmt.Fprintf(w, "  uncategorized\t%d\trun: budgit txn list --uncategorized\n", unc)
+	}
+	if res.AssumedOut > 0 {
+		fmt.Fprintf(w, "  assumed outgoing\t%d\tunrecognised type, treated as spending\n", res.AssumedOut)
+	}
+	if n := len(res.Suspects); n > 0 {
+		fmt.Fprintf(w, "  possible duplicates\t%d\tsee below\n", n)
+	}
+	w.Flush()
+
+	// Imported, not skipped: only you can tell a renumbered export from two
+	// genuine purchases of the same amount on the same day.
+	if len(res.Suspects) > 0 {
+		fmt.Printf("\n%s already had a transaction on the same day for the same amount:\n",
+			plural(len(res.Suspects), "This row", "These rows"))
+		for _, s := range res.Suspects {
+			fmt.Printf("  %s  %-30s %10s   matches txn %d\n",
+				s.Date, truncate(s.Desc, 30), FormatMoney(s.Cents), s.ExistingID)
+		}
+		fmt.Println("Both were kept. Remove one with: budgit txn delete <id>")
+	}
+
+	if !dry && res.Imported > 0 {
+		fmt.Printf("\n%s balance is now %s\n", a.Name, FormatMoney(db.AccountBalance(a.ID)))
+	}
+}
+
+func skipDetail(res *importResult) string {
+	var parts []string
+	if res.Pending > 0 {
+		parts = append(parts, fmt.Sprintf("%d pending", res.Pending))
+	}
+	if res.Junk > 0 {
+		parts = append(parts, fmt.Sprintf("%d with no date or amount", res.Junk))
+	}
+	if res.Zero > 0 {
+		parts = append(parts, fmt.Sprintf("%d zero", res.Zero))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // ---- budget ----
