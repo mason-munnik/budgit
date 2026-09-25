@@ -58,13 +58,21 @@ func AddTransaction(db *DB, date, acctRef, catRef, desc, amount string) (*Transa
 		cents = -abs(cents)
 	}
 
+	return appendTransaction(db, d, a.ID, catID, desc, cents, ""), nil
+}
+
+// appendTransaction is the one place a Transaction is created and handed an ID.
+// Callers pass the amount in final signed cents: AddTransaction after it has
+// inferred a direction, the CSV importer straight from the file.
+func appendTransaction(db *DB, date string, acctID, catID int, desc string, cents int64, extID string) *Transaction {
 	t := Transaction{
-		ID: db.NextTransactionID, Date: d, AccountID: a.ID,
-		CategoryID: catID, Description: strings.TrimSpace(desc), AmountCents: cents,
+		ID: db.NextTransactionID, Date: date, AccountID: acctID,
+		CategoryID: catID, Description: strings.TrimSpace(desc),
+		AmountCents: cents, ExternalID: extID,
 	}
 	db.NextTransactionID++
 	db.Transactions = append(db.Transactions, t)
-	return &db.Transactions[len(db.Transactions)-1], nil
+	return &db.Transactions[len(db.Transactions)-1]
 }
 
 // DeleteTransaction removes one transaction and returns the record it removed,

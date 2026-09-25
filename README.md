@@ -80,6 +80,73 @@ budgit txn delete 42
 
 The date defaults to today. You can leave out `--account` if you only have one.
 
+## Import from your bank
+
+Instead of typing each transaction, point budgit at a CSV your bank exported:
+
+```sh
+budgit txn import ~/Downloads/ExportedTransactions.csv --account "Chase Checking"
+```
+
+Every bank writes CSV differently, so budgit works out the delimiter, which line
+the real header is on, and how the bank writes amounts. Look before you leap:
+
+```sh
+budgit txn import statement.csv --account "Chase Checking" --dry-run
+```
+
+That prints what it worked out and what it would add, and saves nothing.
+
+**Running the same file twice is safe.** Rows are matched on the bank's own
+transaction id, so a second import adds nothing and overlapping date ranges only
+add what is new.
+
+**Overlapping downloads are safe too.** If you pull September 1-30 and later
+September 15 - October 15, the shared rows are recognised and imported once.
+
+**Entering something by hand and importing it later is also safe.** A statement
+row that lands on the same day for the same exact amount claims the transaction
+you typed rather than adding a second copy. Your description and category are
+kept; the row just gains the bank's id, so later imports recognise it outright.
+Matching is one to one, so two genuine identical purchases on the same day stay
+two transactions.
+
+A few banks renumber their own transaction ids between exports, which nothing
+can match on. Budgit keeps both rows in that case and tells you, because two
+identical purchases in one day are perfectly real and only you can tell which it
+was:
+
+```
+  possible duplicates  1
+
+This row already had a transaction on the same day for the same amount:
+  2026-09-05  Amazon        -$37.44   matches txn 1
+Both were kept. Remove one with: budgit txn delete <id>
+```
+
+Some things worth knowing:
+
+- Dates like `3/4/2026` are read month-first. If your bank writes them the other
+  way round, pass `--date-format 02/01/2006`.
+- Budgit tries to match the bank's category column to your own categories, by
+  name and then by a few common aliases (`Gasoline/Fuel` finds `Gas`). Anything
+  it cannot place is left uncategorized — `budgit txn list --uncategorized` finds
+  them. Add your own with `--map "Restaurants & Dining=Eating-Out"`, or turn the
+  whole thing off with `--no-category`. It never creates a category.
+- Pending transactions are skipped. They have no date yet and can still change.
+- Credit card exports often write purchases as positive numbers. If budgit sees
+  signs that disagree with the file's own type column it stops and asks, rather
+  than reversing your money silently. Re-run with `--invert` or `--no-invert`.
+
+If it guesses a column wrong, name it yourself:
+
+```sh
+budgit txn import statement.csv --account Amex     --date-col "Posted Date" --amount-col "Charge" --desc-col "Merchant"
+```
+
+`--debit-col` and `--credit-col` handle banks that split money in and money out
+into two columns.
+
 ## Set budgets and see how you did
 
 ```sh
@@ -132,6 +199,7 @@ budgit txn add              record a transaction
 budgit txn list             list transactions
 budgit txn categorize       change a transaction's category
 budgit txn delete           delete a transaction
+budgit txn import           import transactions from a bank CSV
 budgit budget set           set a monthly budget
 budgit budget list          list budgets
 budgit report               budget vs actual for a month
