@@ -267,7 +267,7 @@ func TestSetCategoryBudget(t *testing.T) {
 	if len(db.Budgets) != 1 {
 		t.Errorf("%d budget rows, want 1 replaced in place", len(db.Budgets))
 	}
-	if got, ok := db.BudgetFor(1, "2026-09"); !ok || got != 45000 {
+	if got, _, ok := db.BudgetFor(1, "2026-09"); !ok || got != 45000 {
 		t.Errorf("BudgetFor = %d (%v), want 45000", got, ok)
 	}
 
@@ -278,8 +278,44 @@ func TestSetCategoryBudget(t *testing.T) {
 	if len(db.Budgets) != 2 {
 		t.Errorf("%d budget rows, want 2 — months are budgeted separately", len(db.Budgets))
 	}
-	if got, _ := db.BudgetFor(1, "2026-09"); got != 45000 {
+	if got, _, _ := db.BudgetFor(1, "2026-09"); got != 45000 {
 		t.Errorf("September moved to %d, want it left at 45000", got)
+	}
+}
+
+// A budget carries forward until changed, and zero stops it.
+func TestBudgetCarriesForward(t *testing.T) {
+	db := testDB()
+	for _, b := range []struct{ month, amount string }{{"2026-06", "500"}, {"2026-08", "600"}, {"2026-11", "0"}} {
+		if _, _, _, err := SetCategoryBudget(db, "Groceries", b.month, b.amount); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cases := []struct {
+		month, from string
+		cents       int64
+		ok          bool
+	}{
+		{"2026-05", "", 0, false},           // before any budget
+		{"2026-06", "2026-06", 50000, true}, // set that month
+		{"2026-07", "2026-06", 50000, true}, // inherited
+		{"2026-10", "2026-08", 60000, true}, // inherited from the newer one
+		{"2026-11", "", 0, false},           // stopped with zero
+		{"2027-03", "", 0, false},           // and stays stopped
+	}
+	for _, c := range cases {
+		cents, from, ok := db.BudgetFor(1, c.month)
+		if cents != c.cents || from != c.from || ok != c.ok {
+			t.Errorf("BudgetFor(%s) = %d, %q, %v; want %d, %q, %v", c.month, cents, from, ok, c.cents, c.from, c.ok)
+		}
+	}
+
+	rep := BuildReport(db, "2026-09")
+	if len(rep.Expenses) != 1 || !rep.Expenses[0].Inherited || rep.Expenses[0].BudgetFrom != "2026-08" {
+		t.Errorf("September report = %+v, want Groceries inherited from 2026-08", rep.Expenses)
+	}
+	if tr := Trend(db, []string{"2026-07", "2026-12"}); tr[0].BudgetCents != 50000 || tr[1].BudgetCents != 0 {
+		t.Errorf("trend budgets = %d, %d; want 50000, 0", tr[0].BudgetCents, tr[1].BudgetCents)
 	}
 }
 
@@ -343,25 +379,32 @@ func TestCategorizeTransactionSigns(t *testing.T) {
 	}
 }
 
-// Uncategorized has no kind, so filing it anywhere still sets the direction.
+// Uncategorized counts as spending, so a refund keeps its sign.
 func TestCategorizeUncategorized(t *testing.T) {
-	db := testDB()
-	txn, err := AddTransaction(db, "2026-09-04", "Veridian Checking", "", "x", "+50")
-	if err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name, amount, cat string
+		want              int64
+	}{
+		{"a refund stays a refund", "+50", "Groceries", 5000},
+		{"spending stays spending", "50", "Groceries", -5000},
+		{"unsigned spending filed as income turns positive", "50", "Paycheck", 5000},
 	}
-	if txn.AmountCents != 5000 {
-		t.Fatalf("setup: amount = %d, want 5000", txn.AmountCents)
-	}
-	moved, was, err := CategorizeTransaction(db, txn.ID, "Groceries")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if was != "(uncategorized)" {
-		t.Errorf("previous category = %q, want \"(uncategorized)\"", was)
-	}
-	if moved.AmountCents != -5000 {
-		t.Errorf("amount = %d, want -5000", moved.AmountCents)
+	for _, c := range cases {
+		db := testDB()
+		txn, err := AddTransaction(db, "2026-09-04", "Veridian Checking", "", "x", c.amount)
+		if err != nil {
+			t.Fatal(err)
+		}
+		moved, was, err := CategorizeTransaction(db, txn.ID, c.cat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if was != "(uncategorized)" {
+			t.Errorf("%s: previous category = %q, want \"(uncategorized)\"", c.name, was)
+		}
+		if moved.AmountCents != c.want {
+			t.Errorf("%s: amount = %d, want %d", c.name, moved.AmountCents, c.want)
+		}
 	}
 }
 
@@ -386,5 +429,113 @@ func TestCategorizeTransactionRejects(t *testing.T) {
 		if txn.CategoryID != 1 || txn.AmountCents != -1000 {
 			t.Errorf("%s: a rejected move must leave the transaction alone", c.name)
 		}
+	}
+}
+
+func TestAccountAddRenameDelete(t *testing.T) {
+	db := testDB()
+	a, err := AddAccount(db, " Savings ", "", "4200")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ID != 3 || a.Name != "Savings" || a.Type != "checking" || a.OpeningBalanceCents != 420000 {
+		t.Errorf("AddAccount = %+v", a)
+	}
+	for _, bad := range []struct{ name, bal string }{{"", ""}, {"savings", ""}, {"Other", "abc"}} {
+		if _, err := AddAccount(db, bad.name, "", bad.bal); err == nil {
+			t.Errorf("AddAccount(%q, %q) should fail", bad.name, bad.bal)
+		}
+	}
+
+	if _, _, err := RenameAccount(db, "Savings", "discover card"); err == nil {
+		t.Error("renaming onto another account's name should fail")
+	}
+	if _, was, err := RenameAccount(db, "Savings", "SAVINGS"); err != nil || was != "Savings" {
+		t.Errorf("recasing its own name: was %q, %v", was, err)
+	}
+
+	if _, err := AddTransaction(db, "2026-09-01", "Veridian", "", "x", "5"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DeleteAccount(db, "Veridian"); err == nil {
+		t.Error("an account with transactions must not be deleted")
+	}
+	if gone, err := DeleteAccount(db, "SAVINGS"); err != nil || gone.ID != 3 || len(db.Accounts) != 2 {
+		t.Errorf("DeleteAccount = %+v, %v; %d left", gone, err, len(db.Accounts))
+	}
+}
+
+func TestCategoryRenameDelete(t *testing.T) {
+	db := testDB()
+	if _, _, err := RenameCategory(db, "Groceries", "paycheck"); err == nil {
+		t.Error("renaming onto another category's name should fail")
+	}
+	if c, was, err := RenameCategory(db, "Groceries", "Food"); err != nil || was != "Groceries" || c.Name != "Food" {
+		t.Errorf("RenameCategory = %v, %q, %v", c, was, err)
+	}
+
+	tx, _ := AddTransaction(db, "2026-09-01", "Veridian", "Food", "store", "+5") // a refund
+	if _, _, _, err := SetCategoryBudget(db, "Food", "2026-09", "300"); err != nil {
+		t.Fatal(err)
+	}
+	mustRule(t, db, "store", "Food")
+	mustRule(t, db, "acme", "Paycheck")
+
+	gone, n, err := DeleteCategory(db, "Food")
+	if err != nil || gone.Name != "Food" {
+		t.Fatalf("DeleteCategory = %+v, %v", gone, err)
+	}
+	if n != (categoryRemoval{Txns: 1, Budgets: 1, Rules: 1}) {
+		t.Errorf("removed %+v, want 1 of each", n)
+	}
+	if tx := db.FindTransaction(tx.ID); tx.CategoryID != 0 || tx.AmountCents != 500 {
+		t.Errorf("orphaned txn = %+v, want uncategorized and still +500", tx)
+	}
+	if len(db.Categories) != 1 || len(db.Budgets) != 0 || len(db.Rules) != 1 {
+		t.Errorf("left %d categories, %d budgets, %d rules; want 1, 0, 1", len(db.Categories), len(db.Budgets), len(db.Rules))
+	}
+}
+
+func TestEditTransaction(t *testing.T) {
+	str := func(s string) *string { return &s }
+	db := testDB()
+	refund, _ := AddTransaction(db, "2026-09-01", "Veridian", "Groceries", "return", "+15")
+
+	if tx, err := EditTransaction(db, refund.ID, txnEdit{Amount: str("18")}); err != nil || tx.AmountCents != 1800 {
+		t.Errorf("unsigned edit of a refund = %v, %v; want +1800", tx, err)
+	}
+	if tx, _ := EditTransaction(db, refund.ID, txnEdit{Amount: str("-18")}); tx.AmountCents != -1800 {
+		t.Errorf("signed edit = %d, want -1800", tx.AmountCents)
+	}
+
+	tx, err := EditTransaction(db, refund.ID, txnEdit{
+		Date: str("2026-08-30"), Account: str("Discover"), Description: str("  Trader Joes "),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tx.Date != "2026-08-30" || tx.AccountID != 2 || tx.Description != "Trader Joes" || tx.AmountCents != -1800 {
+		t.Errorf("edited = %+v", tx)
+	}
+
+	// One bad field rejects the whole edit.
+	before := *tx
+	if _, err := EditTransaction(db, tx.ID, txnEdit{Date: str("2026-02-30"), Amount: str("99")}); err == nil {
+		t.Error("an impossible date should be rejected")
+	}
+	if *db.FindTransaction(tx.ID) != before {
+		t.Error("a rejected edit changed the transaction")
+	}
+	if _, err := EditTransaction(db, 99, txnEdit{}); err == nil {
+		t.Error("editing a missing transaction should fail")
+	}
+}
+
+func TestUncategorizeTransaction(t *testing.T) {
+	db := testDB()
+	tx, _ := AddTransaction(db, "2026-09-01", "Veridian", "Paycheck", "pay", "100")
+	got, was, err := UncategorizeTransaction(db, tx.ID)
+	if err != nil || was != "Paycheck" || got.CategoryID != 0 || got.AmountCents != 10000 {
+		t.Errorf("Uncategorize = %+v, %q, %v", got, was, err)
 	}
 }

@@ -16,9 +16,8 @@ func ParseMoney(s string) (cents int64, explicitSign bool, err error) {
 	if raw == "" {
 		return 0, false, fmt.Errorf("empty amount")
 	}
-	// Strip currency symbol and thousands separators.
+	// Commas are checked as thousands grouping below rather than stripped here.
 	raw = strings.ReplaceAll(raw, "$", "")
-	raw = strings.ReplaceAll(raw, ",", "")
 	raw = strings.ReplaceAll(raw, "_", "")
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -32,6 +31,7 @@ func ParseMoney(s string) (cents int64, explicitSign bool, err error) {
 	case '+':
 		explicitSign, raw = true, raw[1:]
 	}
+	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return 0, false, fmt.Errorf("amount %q has no digits", s)
 	}
@@ -39,6 +39,17 @@ func ParseMoney(s string) (cents int64, explicitSign bool, err error) {
 	whole, frac := raw, ""
 	if i := strings.IndexByte(raw, '.'); i >= 0 {
 		whole, frac = raw[:i], raw[i+1:]
+	}
+	if strings.Contains(whole, ",") {
+		// "1,50" is a decimal comma, not grouping; never read it as $150.
+		if !validGrouping(whole) {
+			return 0, false, fmt.Errorf("amount %q: commas only separate thousands here — use a dot for cents, e.g. 1.50", s)
+		}
+		whole = strings.ReplaceAll(whole, ",", "")
+	}
+	// Rejects a second sign, as in "+-5" or "1.-5".
+	if !allDigits(whole) || !allDigits(frac) || whole+frac == "" {
+		return 0, false, fmt.Errorf("invalid amount %q", s)
 	}
 	if whole == "" {
 		whole = "0"
@@ -49,6 +60,9 @@ func ParseMoney(s string) (cents int64, explicitSign bool, err error) {
 	// Right-pad so "5.1" means 10 cents, not 1.
 	for len(frac) < 2 {
 		frac += "0"
+	}
+	if len(strings.TrimLeft(whole, "0")) > maxWholeDigits {
+		return 0, false, fmt.Errorf("amount %q is too large", s)
 	}
 
 	w, err := strconv.ParseInt(whole, 10, 64)
@@ -64,6 +78,32 @@ func ParseMoney(s string) (cents int64, explicitSign bool, err error) {
 		cents = -cents
 	}
 	return cents, explicitSign, nil
+}
+
+// maxWholeDigits keeps amounts under $1 trillion, far short of int64 overflow.
+const maxWholeDigits = 12
+
+func allDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// validGrouping accepts "1,299" and "12,345,678" but not "1,50".
+func validGrouping(s string) bool {
+	groups := strings.Split(s, ",")
+	if len(groups[0]) < 1 || len(groups[0]) > 3 {
+		return false
+	}
+	for _, g := range groups[1:] {
+		if len(g) != 3 {
+			return false
+		}
+	}
+	return true
 }
 
 // FormatMoney renders signed cents as $1,234.56 / -$1,234.56.

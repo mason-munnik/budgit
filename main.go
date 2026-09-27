@@ -19,14 +19,23 @@ Commands:
   account add   --name NAME [--type TYPE] [--balance AMT]
   account list
   account set-balance --account REF --amount AMT
+  account rename REF --name NAME
+  account delete REF            (only once it has no transactions)
   category add  --name NAME --kind income|expense
   category list
+  category rename REF --name NAME
+  category delete REF           (its transactions become uncategorized)
   txn add       --amount AMT [--date YYYY-MM-DD] [--account REF] [--category REF] [--desc TEXT]
   txn list      [--month YYYY-MM] [--account REF] [--category REF] [--uncategorized] [--limit N]
-  txn categorize ID CATEGORY
+  txn edit      ID [--date YYYY-MM-DD] [--account REF] [--desc TEXT] [--amount AMT]
+  txn categorize ID CATEGORY | ID --none
   txn delete    ID
-  txn import    PATH.csv --account REF [--dry-run] [--invert|--no-invert]
-  budget set    --category REF --amount AMT [--month YYYY-MM]
+  txn import    PATH.csv --account REF [--dry-run] [--invert|--no-invert] [--no-rules]
+  rule add      --match TEXT --category REF
+  rule list
+  rule delete   ID
+  rule apply    [--dry-run]
+  budget set    --category REF --amount AMT [--month YYYY-MM]   (carries forward; 0 stops it)
   budget list   [--month YYYY-MM]
   report        [--month YYYY-MM]
   serve         [--addr localhost:8080]
@@ -35,7 +44,8 @@ Amounts:
   Signed cents internally; never floats. Write amounts as 84.31, $84.31 or 1,299.
   An UNSIGNED amount takes its direction from the category: expense categories
   record an outflow, income categories an inflow. An explicit +/- always wins,
-  so a refund into an expense category is "--amount +24.99".
+  so a refund into an expense category is "--amount +24.99". Commas only
+  separate thousands: write cents with a dot.
 
 Accounts and categories may be referenced by name (case-insensitive, unique
 substring is enough) or by numeric ID.
@@ -47,6 +57,12 @@ Importing:
   Re-running the same file imports nothing: rows are matched on the bank's own
   transaction id. Name columns yourself with --date-col, --amount-col,
   --debit-col, --credit-col, --desc-col, --category-col, --id-col, --type-col.
+
+Rules:
+  "rule add --match TEXT --category REF" files any transaction whose description
+  contains TEXT (ignoring case) under that category — on import, on "txn add"
+  with no --category, and on past uncategorized ones via "rule apply". The
+  longest matching TEXT wins. A rule beats the bank's own category column.
 
 Data lives in ~/.budgit/budgit.json — override with --file or $BUDGIT_FILE.
 `
@@ -64,6 +80,8 @@ func main() {
 		err = cmdCategory(os.Args[2:])
 	case "txn", "tx", "transaction":
 		err = cmdTxn(os.Args[2:])
+	case "rule", "rules":
+		err = cmdRule(os.Args[2:])
 	case "budget":
 		err = cmdBudget(os.Args[2:])
 	case "report":
@@ -132,23 +150,10 @@ func cmdAccount(args []string) error {
 		if err != nil {
 			return err
 		}
-		for _, a := range db.Accounts {
-			if strings.EqualFold(a.Name, *name) {
-				return fmt.Errorf("account %q already exists (id %d)", a.Name, a.ID)
-			}
+		a, err := AddAccount(db, *name, *typ, *balance)
+		if err != nil {
+			return err
 		}
-		var opening int64
-		if strings.TrimSpace(*balance) != "" {
-			// Always explicit here: there is no category to infer a sign from,
-			// so "-499.50" means you owe and "4200" means you hold.
-			opening, _, err = ParseMoney(*balance)
-			if err != nil {
-				return err
-			}
-		}
-		a := Account{ID: db.NextAccountID, Name: strings.TrimSpace(*name), Type: *typ, OpeningBalanceCents: opening}
-		db.NextAccountID++
-		db.Accounts = append(db.Accounts, a)
 		if err := db.Save(); err != nil {
 			return err
 		}
@@ -201,8 +206,51 @@ func cmdAccount(args []string) error {
 			a.Name, FormatMoney(db.AccountBalance(a.ID)),
 			FormatMoney(a.OpeningBalanceCents), FormatMoney(fromTxns))
 		return nil
+
+	case "rename":
+		pos, flags := splitPositional(rest)
+		fs := newFS("account rename", &path)
+		name := fs.String("name", "", "the new name (required)")
+		fs.Parse(flags)
+		if len(pos) != 1 || strings.TrimSpace(*name) == "" {
+			return fmt.Errorf("usage: budgit account rename <account> --name NEW")
+		}
+		db, err := Load(path)
+		if err != nil {
+			return err
+		}
+		a, was, err := RenameAccount(db, pos[0], *name)
+		if err != nil {
+			return err
+		}
+		if err := db.Save(); err != nil {
+			return err
+		}
+		fmt.Printf("Account %d: %s -> %s\n", a.ID, was, a.Name)
+		return nil
+
+	case "delete", "del", "rm":
+		pos, flags := splitPositional(rest)
+		fs := newFS("account delete", &path)
+		fs.Parse(flags)
+		if len(pos) != 1 {
+			return fmt.Errorf("usage: budgit account delete <account>")
+		}
+		db, err := Load(path)
+		if err != nil {
+			return err
+		}
+		gone, err := DeleteAccount(db, pos[0])
+		if err != nil {
+			return err
+		}
+		if err := db.Save(); err != nil {
+			return err
+		}
+		fmt.Printf("Deleted account %d: %s\n", gone.ID, gone.Name)
+		return nil
 	}
-	return fmt.Errorf("unknown account subcommand %q (want: add, list, set-balance)", action)
+	return fmt.Errorf("unknown account subcommand %q (want: add, list, set-balance, rename, delete)", action)
 }
 
 // ---- category ----
@@ -255,8 +303,60 @@ func cmdCategory(args []string) error {
 			fmt.Fprintf(w, "%d\t%s\t%s\n", c.ID, c.Name, c.Kind)
 		}
 		return w.Flush()
+
+	case "rename":
+		pos, flags := splitPositional(rest)
+		fs := newFS("category rename", &path)
+		name := fs.String("name", "", "the new name (required)")
+		fs.Parse(flags)
+		if len(pos) != 1 || strings.TrimSpace(*name) == "" {
+			return fmt.Errorf("usage: budgit category rename <category> --name NEW")
+		}
+		db, err := Load(path)
+		if err != nil {
+			return err
+		}
+		c, was, err := RenameCategory(db, pos[0], *name)
+		if err != nil {
+			return err
+		}
+		if err := db.Save(); err != nil {
+			return err
+		}
+		fmt.Printf("Category %d: %s -> %s\n", c.ID, was, c.Name)
+		return nil
+
+	case "delete", "del", "rm":
+		pos, flags := splitPositional(rest)
+		fs := newFS("category delete", &path)
+		fs.Parse(flags)
+		if len(pos) != 1 {
+			return fmt.Errorf("usage: budgit category delete <category>")
+		}
+		db, err := Load(path)
+		if err != nil {
+			return err
+		}
+		gone, n, err := DeleteCategory(db, pos[0])
+		if err != nil {
+			return err
+		}
+		if err := db.Save(); err != nil {
+			return err
+		}
+		fmt.Printf("Deleted category %d: %s\n", gone.ID, gone.Name)
+		if n.Txns > 0 {
+			fmt.Printf("  %d %s now uncategorized\n", n.Txns, plural(n.Txns, "transaction is", "transactions are"))
+		}
+		if n.Budgets > 0 {
+			fmt.Printf("  %d %s removed\n", n.Budgets, plural(n.Budgets, "budget", "budgets"))
+		}
+		if n.Rules > 0 {
+			fmt.Printf("  %d %s removed\n", n.Rules, plural(n.Rules, "rule", "rules"))
+		}
+		return nil
 	}
-	return fmt.Errorf("unknown category subcommand %q (want: add, list)", action)
+	return fmt.Errorf("unknown category subcommand %q (want: add, list, rename, delete)", action)
 }
 
 // ---- transactions ----
@@ -412,6 +512,7 @@ func cmdTxn(args []string) error {
 		fs.BoolVar(&opts.Invert, "invert", false, "flip every sign (card exports where purchases are positive)")
 		fs.BoolVar(&opts.NoInvert, "no-invert", false, "confirm the signs are already correct")
 		fs.BoolVar(&opts.NoCategory, "no-category", false, "ignore the file's category column")
+		fs.BoolVar(&opts.NoRules, "no-rules", false, "do not apply your categorization rules")
 		fs.Var((*stringList)(&opts.Maps), "map", "map a bank category onto one of yours, e.g. \"Restaurants & Dining=Eating-Out\" (repeatable)")
 		fs.StringVar(&opts.Delimiter, "delimiter", "", "field separator: , ; tab pipe (default: sniffed)")
 		fs.StringVar(&opts.Decimal, "decimal", "", "decimal separator: dot or comma (default: sniffed)")
@@ -449,7 +550,7 @@ func cmdTxn(args []string) error {
 		if err != nil {
 			return err
 		}
-		if !opts.DryRun && res.Imported > 0 {
+		if !opts.DryRun && (res.Imported > 0 || res.Matched > 0) {
 			if err := db.Save(); err != nil {
 				return err
 			}
@@ -461,9 +562,10 @@ func cmdTxn(args []string) error {
 		// Positional: txn categorize ID CATEGORY  (flags may follow)
 		pos, flags := splitPositional(rest)
 		fs := newFS("txn categorize", &path)
+		none := fs.Bool("none", false, "take it out of its category")
 		fs.Parse(flags)
-		if len(pos) < 2 {
-			return fmt.Errorf("usage: budgit txn categorize <txn-id> <category>")
+		if (*none && len(pos) != 1) || (!*none && len(pos) < 2) {
+			return fmt.Errorf("usage: budgit txn categorize <txn-id> <category>  |  <txn-id> --none")
 		}
 		id, err := strconv.Atoi(pos[0])
 		if err != nil {
@@ -473,7 +575,13 @@ func cmdTxn(args []string) error {
 		if err != nil {
 			return err
 		}
-		t, was, err := CategorizeTransaction(db, id, strings.Join(pos[1:], " "))
+		var t *Transaction
+		var was string
+		if *none {
+			t, was, err = UncategorizeTransaction(db, id)
+		} else {
+			t, was, err = CategorizeTransaction(db, id, strings.Join(pos[1:], " "))
+		}
 		if err != nil {
 			return err
 		}
@@ -483,8 +591,43 @@ func cmdTxn(args []string) error {
 		fmt.Printf("Txn %d: %s -> %s  (%s %s)\n",
 			t.ID, was, db.CategoryName(t.CategoryID), t.Date, FormatMoney(t.AmountCents))
 		return nil
+
+	case "edit":
+		pos, flags := splitPositional(rest)
+		fs := newFS("txn edit", &path)
+		var e txnEdit
+		fs.Func("date", "new date, YYYY-MM-DD", func(v string) error { e.Date = &v; return nil })
+		fs.Func("account", "move it to another account", func(v string) error { e.Account = &v; return nil })
+		fs.Func("desc", "new description", func(v string) error { e.Description = &v; return nil })
+		fs.Func("amount", "new amount; with no sign it keeps its direction", func(v string) error { e.Amount = &v; return nil })
+		fs.Parse(flags)
+		if len(pos) != 1 {
+			return fmt.Errorf("usage: budgit txn edit <txn-id> [--date] [--account] [--desc] [--amount]")
+		}
+		if e == (txnEdit{}) {
+			return fmt.Errorf("nothing to change: give --date, --account, --desc or --amount")
+		}
+		id, err := strconv.Atoi(pos[0])
+		if err != nil {
+			return fmt.Errorf("transaction id %q is not a number", pos[0])
+		}
+		db, err := Load(path)
+		if err != nil {
+			return err
+		}
+		t, err := EditTransaction(db, id, e)
+		if err != nil {
+			return err
+		}
+		if err := db.Save(); err != nil {
+			return err
+		}
+		fmt.Printf("Edited txn %d: %s  %s  %s  %s  [%s]\n",
+			t.ID, t.Date, FormatMoney(t.AmountCents), db.AccountName(t.AccountID),
+			t.Description, db.CategoryName(t.CategoryID))
+		return nil
 	}
-	return fmt.Errorf("unknown txn subcommand %q (want: add, list, categorize, delete, import)", action)
+	return fmt.Errorf("unknown txn subcommand %q (want: add, list, edit, categorize, delete, import)", action)
 }
 
 // stringList collects a flag given more than once, like --map.
@@ -536,7 +679,11 @@ func printImport(db *DB, a *Account, res *importResult, dry bool) {
 		fmt.Fprintf(w, "  matched\t%d\t%s already recorded, same day and amount\n",
 			res.Matched, plural(res.Matched, "row", "rows"))
 	}
-	fmt.Fprintf(w, "  categorized\t%d\n", res.Categorized)
+	if res.ByRule > 0 {
+		fmt.Fprintf(w, "  categorized\t%d\t%d by rule\n", res.Categorized, res.ByRule)
+	} else {
+		fmt.Fprintf(w, "  categorized\t%d\n", res.Categorized)
+	}
 	if unc := res.Imported - res.Categorized; unc > 0 {
 		fmt.Fprintf(w, "  uncategorized\t%d\trun: budgit txn list --uncategorized\n", unc)
 	}
@@ -579,6 +726,120 @@ func skipDetail(res *importResult) string {
 	return strings.Join(parts, ", ")
 }
 
+// ---- rules ----
+
+func cmdRule(args []string) error {
+	action, rest := sub(args)
+	var path string
+	switch action {
+	case "add":
+		fs := newFS("rule add", &path)
+		match := fs.String("match", "", "text the description must contain, any case (required)")
+		cat := fs.String("category", "", "category name or ID (required)")
+		fs.Parse(rest)
+		if strings.TrimSpace(*match) == "" || strings.TrimSpace(*cat) == "" {
+			return fmt.Errorf("rule add requires --match and --category")
+		}
+		db, err := Load(path)
+		if err != nil {
+			return err
+		}
+		r, err := AddRule(db, *match, *cat)
+		if err != nil {
+			return err
+		}
+		if err := db.Save(); err != nil {
+			return err
+		}
+		fmt.Printf("Added rule %d: %q -> %s\n", r.ID, r.Match, db.CategoryName(r.CategoryID))
+		if all, _ := RuleReach(db, r.Match); all > 0 {
+			fmt.Printf("It matches %d existing %s.\n", all, plural(all, "transaction", "transactions"))
+		}
+		if n := len(RuleHits(db)); n > 0 {
+			fmt.Printf("%d uncategorized %s match your rules. Run: budgit rule apply\n",
+				n, plural(n, "transaction", "transactions"))
+		}
+		return nil
+
+	case "list", "ls", "":
+		fs := newFS("rule list", &path)
+		fs.Parse(rest)
+		db, err := Load(path)
+		if err != nil {
+			return err
+		}
+		if len(db.Rules) == 0 {
+			fmt.Println(`No rules yet. Add one: budgit rule add --match "trader joe" --category Groceries`)
+			return nil
+		}
+		w := out()
+		fmt.Fprintln(w, "ID\tMATCH\tCATEGORY")
+		for _, r := range db.Rules {
+			fmt.Fprintf(w, "%d\t%s\t%s\n", r.ID, r.Match, db.CategoryName(r.CategoryID))
+		}
+		return w.Flush()
+
+	case "delete", "del", "rm":
+		pos, flags := splitPositional(rest)
+		fs := newFS("rule delete", &path)
+		fs.Parse(flags)
+		if len(pos) != 1 {
+			return fmt.Errorf("usage: budgit rule delete <rule-id>")
+		}
+		id, err := strconv.Atoi(pos[0])
+		if err != nil {
+			return fmt.Errorf("rule id %q is not a number", pos[0])
+		}
+		db, err := Load(path)
+		if err != nil {
+			return err
+		}
+		gone, err := DeleteRule(db, id)
+		if err != nil {
+			return err
+		}
+		if err := db.Save(); err != nil {
+			return err
+		}
+		fmt.Printf("Deleted rule %d: %q -> %s\n", gone.ID, gone.Match, db.CategoryName(gone.CategoryID))
+		return nil
+
+	case "apply":
+		fs := newFS("rule apply", &path)
+		dry := fs.Bool("dry-run", false, "show what would be categorized, save nothing")
+		fs.Parse(rest)
+		db, err := Load(path)
+		if err != nil {
+			return err
+		}
+		var hits []ruleHit
+		if *dry {
+			hits = RuleHits(db)
+		} else {
+			hits = ApplyRules(db)
+		}
+		if len(hits) == 0 {
+			fmt.Println("No uncategorized transactions match your rules.")
+			return nil
+		}
+		for _, h := range hits {
+			t := db.FindTransaction(h.TxnID)
+			fmt.Printf("  %s  %-34s %12s  -> %s\n",
+				t.Date, truncate(t.Description, 34), FormatMoney(t.AmountCents), db.CategoryName(h.CategoryID))
+		}
+		if *dry {
+			fmt.Printf("\nWould categorize %d %s. Nothing saved.\n", len(hits), plural(len(hits), "transaction", "transactions"))
+			return nil
+		}
+		if err := db.Save(); err != nil {
+			return err
+		}
+		fmt.Printf("\nCategorized %d %s.\n", len(hits), plural(len(hits), "transaction", "transactions"))
+		return nil
+	}
+	return fmt.Errorf("unknown rule subcommand %q (want: add, list, delete, apply)", action)
+}
+
 // ---- budget ----
 
 func cmdBudget(args []string) error {
@@ -605,7 +866,11 @@ func cmdBudget(args []string) error {
 		if err := db.Save(); err != nil {
 			return err
 		}
-		fmt.Printf("Budget set: %s %s = %s\n", c.Name, m, FormatMoney(cents))
+		if cents == 0 {
+			fmt.Printf("Budget stopped: %s has no budget from %s on\n", c.Name, m)
+		} else {
+			fmt.Printf("Budget set: %s %s = %s, carried forward until you change it\n", c.Name, m, FormatMoney(cents))
+		}
 		return nil
 
 	case "list", "ls", "":
@@ -625,8 +890,8 @@ func cmdBudget(args []string) error {
 		fmt.Fprintln(w, "CATEGORY\tKIND\tBUDGET")
 		n := 0
 		for _, c := range db.Categories {
-			if b, ok := db.BudgetFor(c.ID, m); ok {
-				fmt.Fprintf(w, "%s\t%s\t%s\n", c.Name, c.Kind, FormatMoney(b))
+			if b, from, ok := db.BudgetFor(c.ID, m); ok {
+				fmt.Fprintf(w, "%s\t%s\t%s%s\n", c.Name, c.Kind, FormatMoney(b), inheritedNote(m, from))
 				total += b
 				n++
 			}
@@ -672,7 +937,7 @@ func cmdReport(args []string) error {
 		for _, r := range rep.Expenses {
 			budget, remain, used := "—", "—", ""
 			if r.HasBudget {
-				budget = FormatMoney(r.BudgetCents)
+				budget = FormatMoney(r.BudgetCents) + inheritedNote(m, r.BudgetFrom)
 				remain = FormatMoney(r.RemainCents)
 				used = fmt.Sprintf("%3.0f%% %s", r.PercentUsed, bar(r.PercentUsed))
 				if r.OverBudget {
@@ -715,6 +980,13 @@ func cmdReport(args []string) error {
 	return nil
 }
 
+func inheritedNote(month, from string) string {
+	if from == "" || from == month {
+		return ""
+	}
+	return " (from " + from + ")"
+}
+
 // bar renders a 10-cell usage meter. Over-budget fills completely.
 func bar(pct float64) string {
 	const width = 10
@@ -733,11 +1005,13 @@ func bar(pct float64) string {
 	return "[" + strings.Repeat("#", filled) + strings.Repeat("·", width-filled) + "]"
 }
 
+// truncate counts runes, so a multi-byte character is never split.
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	return string(r[:n-1]) + "…"
 }
 
 func abs(v int64) int64 {

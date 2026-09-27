@@ -14,7 +14,8 @@ type importOptions struct {
 	DryRun     bool
 	Invert     bool
 	NoInvert   bool
-	NoCategory bool
+	NoCategory bool // ignore the file's category column; rules still apply
+	NoRules    bool
 	Maps       []string          // "BANK LABEL=Budgit Category"
 	Delimiter  string            // "," ";" "tab" ...
 	Decimal    string            // "dot" | "comma"
@@ -218,11 +219,12 @@ var bankCategoryAliases = map[string]string{
 	"tolls":                "Parking/Tolls",
 }
 
-// categoryResolver turns a bank's category label into a budgit category id.
+// categoryResolver chooses a row's category: your rules first, then the bank's label.
 type categoryResolver struct {
+	db       *DB               // rules; nil when --no-rules
 	byName   map[string]int    // lowercased budgit category name -> id
 	user     map[string]string // lowercased bank label -> budgit category name
-	disabled bool
+	disabled bool              // --no-category: ignore the bank's label
 }
 
 func newCategoryResolver(db *DB, opts importOptions) (*categoryResolver, error) {
@@ -230,6 +232,9 @@ func newCategoryResolver(db *DB, opts importOptions) (*categoryResolver, error) 
 		byName:   make(map[string]int, len(db.Categories)),
 		user:     map[string]string{},
 		disabled: opts.NoCategory,
+	}
+	if !opts.NoRules {
+		r.db = db
 	}
 	for _, c := range db.Categories {
 		r.byName[normHeader(c.Name)] = c.ID
@@ -248,10 +253,20 @@ func newCategoryResolver(db *DB, opts importOptions) (*categoryResolver, error) 
 	return r, nil
 }
 
-// resolve returns a category id, or 0 for uncategorized. Deliberately not
+// resolve returns a category id (0 = uncategorized) and whether a rule chose it.
+func (r *categoryResolver) resolve(label, desc string) (id int, byRule bool) {
+	if r.db != nil {
+		if id := r.db.MatchRule(desc); id != 0 {
+			return id, true
+		}
+	}
+	return r.resolveLabel(label), false
+}
+
+// resolveLabel places the bank's own category label. Deliberately not
 // FindCategory: its unique-substring matching is right for one hand-typed
 // --category and far too loose to run unattended over a whole statement.
-func (r *categoryResolver) resolve(label string) int {
+func (r *categoryResolver) resolveLabel(label string) int {
 	if r.disabled {
 		return 0
 	}
@@ -300,6 +315,7 @@ type importResult struct {
 	Duplicates  int
 	Matched     int
 	Categorized int
+	ByRule      int // the part of Categorized that a rule chose
 	AssumedOut  int
 
 	Suspects []suspectRow
@@ -339,7 +355,7 @@ func ImportCSV(db *DB, path string, acctID int, opts importOptions) (*importResu
 		return nil, err
 	}
 
-	seen := db.ExternalIDs()
+	seen := db.ExternalIDs(acctID)
 
 	// claimable indexes what you have already entered by hand on this account,
 	// so a statement row can recognise a purchase you typed yourself instead of
@@ -438,15 +454,18 @@ func ImportCSV(db *DB, path string, acctID int, opts importOptions) (*importResu
 			continue
 		}
 
-		catID := resolver.resolve(cell(row, d.Category))
+		desc := cell(row, d.Desc)
+		catID, byRule := resolver.resolve(cell(row, d.Category), desc)
 		if catID != 0 {
 			res.Categorized++
+		}
+		if byRule {
+			res.ByRule++
 		}
 		if assumed {
 			res.AssumedOut++
 		}
 
-		desc := cell(row, d.Desc)
 		// Consumed one-for-one, so a file holding three genuine repeats against
 		// one existing row warns once rather than three times.
 		if idxs := settled[claimKey{date, cents}]; len(idxs) > 0 {

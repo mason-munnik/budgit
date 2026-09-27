@@ -38,12 +38,17 @@ func AddTransaction(db *DB, date, acctRef, catRef, desc, amount string) (*Transa
 		return nil, err
 	}
 
-	catID := 0
+	var c *Category
 	if strings.TrimSpace(catRef) != "" {
-		c, err := db.FindCategory(catRef)
-		if err != nil {
+		if c, err = db.FindCategory(catRef); err != nil {
 			return nil, err
 		}
+	} else if id := db.MatchRule(desc); id != 0 {
+		c = db.CategoryByID(id)
+	}
+
+	catID := 0
+	if c != nil {
 		catID = c.ID
 		if !explicit {
 			// Unsigned: let the category decide which way the money moved.
@@ -188,7 +193,9 @@ func CategorizeTransaction(db *DB, id int, catRef string) (*Transaction, string,
 	}
 
 	was := db.CategoryName(t.CategoryID)
-	oldKind := "" // uncategorized has no kind, and never matches a real one
+	// Uncategorized counts as spending, like an unsigned AddTransaction, so a
+	// refund filed under an expense stays a refund.
+	oldKind := KindExpense
 	if old := db.CategoryByID(t.CategoryID); old != nil {
 		oldKind = old.Kind
 	}
@@ -204,4 +211,303 @@ func CategorizeTransaction(db *DB, id int, catRef string) (*Transaction, string,
 		}
 	}
 	return t, was, nil
+}
+
+const minRuleLen = 3
+
+// AddRule saves a pattern; patterns are unique after normalization.
+func AddRule(db *DB, match, catRef string) (*Rule, error) {
+	match = strings.TrimSpace(match)
+	if normMatch(match) == "" {
+		return nil, fmt.Errorf("a rule needs some text to match")
+	}
+	if n := len([]rune(strings.ReplaceAll(normMatch(match), " ", ""))); n < minRuleLen {
+		return nil, fmt.Errorf("%q is too short to match safely; use at least %d letters of the merchant name", match, minRuleLen)
+	}
+	if strings.TrimSpace(catRef) == "" {
+		return nil, fmt.Errorf("a category is required")
+	}
+	c, err := db.FindCategory(catRef)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range db.Rules {
+		if normMatch(r.Match) == normMatch(match) {
+			return nil, fmt.Errorf("rule %d already matches %q (delete it first: budgit rule delete %d)", r.ID, r.Match, r.ID)
+		}
+	}
+	if db.NextRuleID < 1 {
+		db.NextRuleID = 1
+	}
+	r := Rule{ID: db.NextRuleID, Match: match, CategoryID: c.ID}
+	db.NextRuleID++
+	db.Rules = append(db.Rules, r)
+	return &db.Rules[len(db.Rules)-1], nil
+}
+
+// DeleteRule removes one rule. IDs are never reused.
+func DeleteRule(db *DB, id int) (Rule, error) {
+	for i := range db.Rules {
+		if db.Rules[i].ID == id {
+			gone := db.Rules[i]
+			db.Rules = append(db.Rules[:i], db.Rules[i+1:]...)
+			return gone, nil
+		}
+	}
+	return Rule{}, fmt.Errorf("no rule with id %d", id)
+}
+
+// ruleHit is one uncategorized transaction a rule would file.
+type ruleHit struct {
+	TxnID      int
+	CategoryID int
+}
+
+// RuleHits lists what ApplyRules would file, changing nothing.
+func RuleHits(db *DB) []ruleHit {
+	var hits []ruleHit
+	for _, t := range db.Transactions {
+		if t.CategoryID != 0 {
+			continue
+		}
+		if id := db.MatchRule(t.Description); id != 0 {
+			hits = append(hits, ruleHit{t.ID, id})
+		}
+	}
+	return hits
+}
+
+// ApplyRules files uncategorized matches. It sets only the category:
+// CategorizeTransaction would force the sign and turn a refund into a purchase.
+func ApplyRules(db *DB) []ruleHit {
+	hits := RuleHits(db)
+	for _, h := range hits {
+		db.FindTransaction(h.TxnID).CategoryID = h.CategoryID
+	}
+	return hits
+}
+
+// AddAccount records an account; balance is its signed opening balance.
+func AddAccount(db *DB, name, typ, balance string) (*Account, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("an account name is required")
+	}
+	if err := accountNameFree(db, name, 0); err != nil {
+		return nil, err
+	}
+	typ = strings.TrimSpace(typ)
+	if typ == "" {
+		typ = "checking"
+	}
+	var opening int64
+	if strings.TrimSpace(balance) != "" {
+		var err error
+		if opening, _, err = ParseMoney(balance); err != nil {
+			return nil, err
+		}
+	}
+	a := Account{ID: db.NextAccountID, Name: name, Type: typ, OpeningBalanceCents: opening}
+	db.NextAccountID++
+	db.Accounts = append(db.Accounts, a)
+	return &db.Accounts[len(db.Accounts)-1], nil
+}
+
+// accountNameFree rejects a name used by any account other than self.
+func accountNameFree(db *DB, name string, self int) error {
+	for _, a := range db.Accounts {
+		if a.ID != self && strings.EqualFold(a.Name, name) {
+			return fmt.Errorf("account %q already exists (id %d)", a.Name, a.ID)
+		}
+	}
+	return nil
+}
+
+func RenameAccount(db *DB, ref, name string) (*Account, string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, "", fmt.Errorf("a new name is required")
+	}
+	a, err := db.FindAccount(ref)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := accountNameFree(db, name, a.ID); err != nil {
+		return nil, "", err
+	}
+	was := a.Name
+	a.Name = name
+	return a, was, nil
+}
+
+// DeleteAccount refuses an account with transactions rather than orphan them.
+func DeleteAccount(db *DB, ref string) (Account, error) {
+	a, err := db.FindAccount(ref)
+	if err != nil {
+		return Account{}, err
+	}
+	n := 0
+	for _, t := range db.Transactions {
+		if t.AccountID == a.ID {
+			n++
+		}
+	}
+	if n > 0 {
+		return Account{}, fmt.Errorf("%s still has %d %s; move or delete %s first",
+			a.Name, n, plural(n, "transaction", "transactions"), plural(n, "it", "them"))
+	}
+	for i := range db.Accounts {
+		if db.Accounts[i].ID == a.ID {
+			gone := db.Accounts[i]
+			db.Accounts = append(db.Accounts[:i], db.Accounts[i+1:]...)
+			return gone, nil
+		}
+	}
+	return Account{}, fmt.Errorf("no account with id %d", a.ID)
+}
+
+func RenameCategory(db *DB, ref, name string) (*Category, string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, "", fmt.Errorf("a new name is required")
+	}
+	c, err := db.FindCategory(ref)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, o := range db.Categories {
+		if o.ID != c.ID && strings.EqualFold(o.Name, name) {
+			return nil, "", fmt.Errorf("category %q already exists (id %d)", o.Name, o.ID)
+		}
+	}
+	was := c.Name
+	c.Name = name
+	return c, was, nil
+}
+
+type categoryRemoval struct {
+	Txns, Budgets, Rules int
+}
+
+// DeleteCategory uncategorizes its transactions and drops its budgets and rules.
+func DeleteCategory(db *DB, ref string) (Category, categoryRemoval, error) {
+	var n categoryRemoval
+	c, err := db.FindCategory(ref)
+	if err != nil {
+		return Category{}, n, err
+	}
+	gone := *c
+	for i := range db.Transactions {
+		if db.Transactions[i].CategoryID == gone.ID {
+			db.Transactions[i].CategoryID = 0
+			n.Txns++
+		}
+	}
+	budgets := db.Budgets[:0]
+	for _, b := range db.Budgets {
+		if b.CategoryID == gone.ID {
+			n.Budgets++
+			continue
+		}
+		budgets = append(budgets, b)
+	}
+	db.Budgets = budgets
+	rules := db.Rules[:0]
+	for _, r := range db.Rules {
+		if r.CategoryID == gone.ID {
+			n.Rules++
+			continue
+		}
+		rules = append(rules, r)
+	}
+	db.Rules = rules
+	for i := range db.Categories {
+		if db.Categories[i].ID == gone.ID {
+			db.Categories = append(db.Categories[:i], db.Categories[i+1:]...)
+			break
+		}
+	}
+	return gone, n, nil
+}
+
+// UncategorizeTransaction leaves the amount's sign as it is.
+func UncategorizeTransaction(db *DB, id int) (*Transaction, string, error) {
+	t := db.FindTransaction(id)
+	if t == nil {
+		return nil, "", fmt.Errorf("no transaction with id %d", id)
+	}
+	was := db.CategoryName(t.CategoryID)
+	t.CategoryID = 0
+	return t, was, nil
+}
+
+// txnEdit is a partial update; nil fields are left alone.
+type txnEdit struct {
+	Date        *string `json:"date,omitempty"`
+	Account     *string `json:"account,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Amount      *string `json:"amount,omitempty"`
+}
+
+// EditTransaction validates every field before changing any. An unsigned
+// amount keeps the transaction's current direction.
+func EditTransaction(db *DB, id int, e txnEdit) (*Transaction, error) {
+	t := db.FindTransaction(id)
+	if t == nil {
+		return nil, fmt.Errorf("no transaction with id %d", id)
+	}
+	date, acctID, desc, cents := t.Date, t.AccountID, t.Description, t.AmountCents
+	if e.Date != nil {
+		d, err := ValidateDate(strings.TrimSpace(*e.Date))
+		if err != nil {
+			return nil, err
+		}
+		date = d
+	}
+	if e.Account != nil {
+		a, err := db.FindAccount(*e.Account)
+		if err != nil {
+			return nil, err
+		}
+		acctID = a.ID
+	}
+	if e.Description != nil {
+		desc = strings.TrimSpace(*e.Description)
+	}
+	if e.Amount != nil {
+		c, explicit, err := ParseMoney(*e.Amount)
+		if err != nil {
+			return nil, err
+		}
+		if !explicit {
+			out := t.AmountCents < 0
+			if t.AmountCents == 0 {
+				cat := db.CategoryByID(t.CategoryID)
+				out = cat == nil || cat.Kind == KindExpense
+			}
+			if c = abs(c); out {
+				c = -c
+			}
+		}
+		cents = c
+	}
+	t.Date, t.AccountID, t.Description, t.AmountCents = date, acctID, desc, cents
+	return t, nil
+}
+
+// RuleReach counts the transactions a pattern matches, and how many are uncategorized.
+func RuleReach(db *DB, match string) (all, uncategorized int) {
+	m := normMatch(match)
+	if m == "" {
+		return 0, 0
+	}
+	for _, t := range db.Transactions {
+		if strings.Contains(normMatch(t.Description), m) {
+			all++
+			if t.CategoryID == 0 {
+				uncategorized++
+			}
+		}
+	}
+	return all, uncategorized
 }

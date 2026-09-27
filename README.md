@@ -72,11 +72,18 @@ You do not need to write a minus sign. If the category is an expense, the money 
 budgit txn add --category Groceries --desc "Returned milk" --amount +12.49
 ```
 
-Typed one in wrong? Delete it by ID — `budgit txn list` shows the IDs:
+Typed one in wrong? Fix it, or delete it, by ID — `budgit txn list` shows the IDs:
 
 ```sh
+budgit txn edit 42 --amount 48.31 --desc "Trader Joe's"
 budgit txn delete 42
 ```
+
+`txn edit` changes only what you give it. An amount without a sign keeps the
+direction the transaction already had, so correcting a refund leaves it a refund.
+
+Commas only separate thousands (`1,299.00`). Write cents with a dot: `1,50` is
+refused rather than read as $150.
 
 The date defaults to today. You can leave out `--account` if you only have one.
 
@@ -132,7 +139,8 @@ Some things worth knowing:
   name and then by a few common aliases (`Gasoline/Fuel` finds `Gas`). Anything
   it cannot place is left uncategorized — `budgit txn list --uncategorized` finds
   them. Add your own with `--map "Restaurants & Dining=Eating-Out"`, or turn the
-  whole thing off with `--no-category`. It never creates a category.
+  whole thing off with `--no-category`. It never creates a category. Your own
+  rules (below) are checked first; `--no-rules` skips them for one import.
 - Pending transactions are skipped. They have no date yet and can still change.
 - Credit card exports often write purchases as positive numbers. If budgit sees
   signs that disagree with the file's own type column it stops and asks, rather
@@ -147,6 +155,38 @@ budgit txn import statement.csv --account Amex     --date-col "Posted Date" --am
 `--debit-col` and `--credit-col` handle banks that split money in and money out
 into two columns.
 
+## Teach it your merchants
+
+Categorize a merchant once and budgit remembers it:
+
+```sh
+budgit rule add --match "trader joe" --category Groceries
+budgit rule add --match "amazon prime" --category Subscriptions
+budgit rule add --match amazon --category Shopping
+```
+
+Any transaction whose description contains that text, in any case, lands in that
+category. The text needs at least three letters, so a stray "a" cannot claim
+every merchant you have. Rules apply when you import a statement, and when you add a
+transaction without a category, both from the command line and the dashboard. A
+rule beats the bank's own category column, because it is your decision about
+that exact merchant.
+
+When more than one rule matches, the longest text wins. That is why "AMAZON PRIME
+MEMBERSHIP" goes to Subscriptions and every other Amazon charge goes to Shopping,
+whatever order you added the rules in.
+
+To file what is already sitting uncategorized:
+
+```sh
+budgit rule apply --dry-run   # see what it would do
+budgit rule apply
+```
+
+This only touches uncategorized transactions, and never changes an amount's
+sign, so a refund stays a refund. `budgit rule list` shows your rules and
+`budgit rule delete <id>` removes one.
+
 ## Set budgets and see how you did
 
 ```sh
@@ -154,7 +194,10 @@ budgit budget set --category Groceries --month 2026-09 --amount 600
 budgit report --month 2026-09
 ```
 
-Budgets are set one month at a time. October needs its own lines.
+A budget carries forward: set Groceries to 600 in September and October,
+November and every month after use 600 too, until you set a new amount. The
+report marks a carried-over budget with the month it came from. To stop
+budgeting a category, set it to 0 from the month it should end.
 
 ## Open the dashboard
 
@@ -170,14 +213,16 @@ You can also enter data there, so you do not have to keep typing commands:
 
 - **Add a transaction** — the "+ Add transaction" button under the transactions list. The form stays open after each one and keeps the date and account, so a batch of receipts goes in quickly. The amount field follows the same rule as the CLI: unsigned takes its direction from the category, `+` in front records a refund.
 - **Delete a transaction** — the × at the end of any row, then confirm.
-- **Change a transaction's category** — click the category on any row and pick a new one.
-- **Set an account balance** — the "Set" button beside any balance.
-- **Set a budget** — click the figures on any row of "Budget vs actual". For a category with no row yet, use the "Set a budget" button. Budgets are per month, and apply to the month you are looking at.
-- **Add a category** — the "+ Add category" button on the same card.
+- **Edit a transaction** — the ✎ at the end of any row changes its date, description, account and amount.
+- **Change a transaction's category** — click the category on any row and pick a new one, or "(uncategorized)" to take it out. Tick "always file … here" first to also make a rule, trimming the text down to the merchant name.
+- **Rules** — the Rules card lists them, adds new ones and deletes them. A rule added there files matching uncategorized transactions straight away.
+- **Accounts** — "+ Add account", click a name to rename it, "Set" to set its balance, × to delete it once it has no transactions.
+- **Set a budget** — click the figures on any row of "Budget vs actual". For a category with no row yet, use the "Set a budget" button. A budget starts in the month you are looking at and carries forward.
+- **Categories** — "+ Add category", and "Manage categories" to rename or delete them.
 
-Adding accounts is still done from the command line, as is budgeting an income category. Changes made in the browser are written straight to your data file, so `budgit report` sees them immediately.
+Budgeting an income category is still done from the command line. Changes made in the browser are written straight to your data file, so `budgit report` sees them immediately. If the command line changes the file at the same moment, the dashboard says so and saves nothing; do it again.
 
-The dashboard binds to localhost only and has no password, so it refuses any request that did not come from its own page.
+The dashboard binds to localhost only and has no password. It refuses any request that did not come from its own page or that names a host other than localhost, and it loads nothing from the internet.
 
 ## Moving a transaction between categories
 
@@ -185,7 +230,22 @@ The dashboard binds to localhost only and has no password, so it refuses any req
 budgit txn categorize 42 Groceries
 ```
 
-If the new category points money the other way, the amount flips to match — moving a purchase into an income category makes it an inflow. If both categories are the same kind the amount is left alone, so a refund filed under the wrong expense category stays a refund.
+If the new category points money the other way, the amount flips to match — moving a purchase into an income category makes it an inflow. If both categories are the same kind the amount is left alone, so a refund filed under the wrong expense category stays a refund. Uncategorized counts as an expense here, so filing an uncategorized refund keeps it a refund too.
+
+`budgit txn categorize 42 --none` takes it back out of its category.
+
+## Renaming and deleting
+
+```sh
+budgit account rename "Amex" --name "Amex Gold"
+budgit category rename Dining --name "Eating Out"
+budgit category delete Coffee
+budgit account delete "Old Savings"
+```
+
+Deleting a category leaves its transactions uncategorized and removes its
+budgets and rules. An account can only be deleted once it has no transactions,
+so its money never silently drops out of your balances.
 
 ## All the commands
 
@@ -193,14 +253,23 @@ If the new category points money the other way, the amount flips to match — mo
 budgit account add          add an account
 budgit account list         list accounts and balances
 budgit account set-balance  set what an account holds right now
+budgit account rename       rename an account
+budgit account delete       delete an account with no transactions
 budgit category add         add a category
 budgit category list        list categories
+budgit category rename      rename a category
+budgit category delete      delete a category
 budgit txn add              record a transaction
 budgit txn list             list transactions
+budgit txn edit             change a transaction's date, account, description or amount
 budgit txn categorize       change a transaction's category
 budgit txn delete           delete a transaction
 budgit txn import           import transactions from a bank CSV
-budgit budget set           set a monthly budget
+budgit rule add             file a merchant under a category automatically
+budgit rule list            list rules
+budgit rule delete          delete a rule
+budgit rule apply           categorize past uncategorized transactions by rule
+budgit budget set           set a monthly budget, carried forward
 budgit budget list          list budgets
 budgit report               budget vs actual for a month
 budgit serve                open the dashboard
