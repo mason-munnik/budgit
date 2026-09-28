@@ -94,7 +94,7 @@ func fingerprint(data []byte, exists bool) []byte {
 }
 
 func onDisk(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path is the user's own --file/BUDGIT_FILE, never web input
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -118,7 +118,7 @@ func DefaultPath() string {
 
 func Load(path string) (*DB, error) {
 	db := &DB{path: path, NextAccountID: 1, NextCategoryID: 1, NextTransactionID: 1}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path is the user's own --file/BUDGIT_FILE, never web input
 	if os.IsNotExist(err) {
 		return db, nil // first run
 	}
@@ -160,7 +160,7 @@ func Load(path string) (*DB, error) {
 // Save writes atomically (temp file, then rename), and returns
 // ErrChangedOnDisk rather than overwrite another process's write.
 func (db *DB) Save() error {
-	if err := os.MkdirAll(filepath.Dir(db.path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(db.path), 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(db, "", "  ")
@@ -173,9 +173,9 @@ func (db *DB) Save() error {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op once the rename succeeds
+	defer func() { _ = os.Remove(tmpName) }() // no-op once the rename succeeds
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close() // the write error is the one worth returning
 		return err
 	}
 	if err := tmp.Close(); err != nil {

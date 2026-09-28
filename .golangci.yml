@@ -1,0 +1,12 @@
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      exclude-functions:
+        # Table output goes through a tabwriter; write errors surface at Flush.
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        # Every FlagSet is flag.ExitOnError, so Parse never returns an error.
+        - (*flag.FlagSet).Parse

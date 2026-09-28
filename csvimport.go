@@ -332,7 +332,7 @@ func ImportCSV(db *DB, path string, acctID int, opts importOptions) (*importResu
 	if opts.Invert && opts.NoInvert {
 		return nil, fmt.Errorf("--invert and --no-invert contradict each other")
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 G703 -- a CSV the user named on the CLI; not reachable from serve
 	if err != nil {
 		return nil, err
 	}

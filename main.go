@@ -465,7 +465,9 @@ func cmdTxn(args []string) error {
 				t.ID, t.Date, db.AccountName(t.AccountID), db.CategoryName(t.CategoryID),
 				truncate(t.Description, 32), FormatMoney(t.AmountCents))
 		}
-		w.Flush()
+		if err := w.Flush(); err != nil {
+			return err
+		}
 		if len(shown) < len(rows) {
 			fmt.Printf("\n%d of %d shown (--limit 0 for all). Net of all %d: %s\n",
 				len(shown), len(rows), len(rows), FormatMoney(total))
@@ -693,7 +695,7 @@ func printImport(db *DB, a *Account, res *importResult, dry bool) {
 	if n := len(res.Suspects); n > 0 {
 		fmt.Fprintf(w, "  possible duplicates\t%d\tsee below\n", n)
 	}
-	w.Flush()
+	_ = w.Flush() // stdout only; the import is already saved
 
 	// Imported, not skipped: only you can tell a renumbered export from two
 	// genuine purchases of the same amount on the same day.
@@ -955,7 +957,9 @@ func cmdReport(args []string) error {
 		fmt.Fprintf(w, "  TOTAL\t%s\t%s\t%s\t%3.0f%% %s\t\n",
 			FormatMoney(rep.TotalBudgetCents), FormatMoney(rep.TotalSpentCents),
 			FormatMoney(totalRemain), totalUsed, bar(totalUsed))
-		w.Flush()
+		if err := w.Flush(); err != nil {
+			return err
+		}
 		fmt.Println()
 	}
 
@@ -967,7 +971,9 @@ func cmdReport(args []string) error {
 			fmt.Fprintf(w, "  %s\t%s\t\n", r.Category, FormatMoney(r.ActualCents))
 		}
 		fmt.Fprintf(w, "  TOTAL\t%s\t\n", FormatMoney(rep.TotalIncomeCents))
-		w.Flush()
+		if err := w.Flush(); err != nil {
+			return err
+		}
 		fmt.Println()
 	}
 
