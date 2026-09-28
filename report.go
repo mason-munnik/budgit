@@ -12,6 +12,8 @@ type ReportRow struct {
 	Kind        string  `json:"kind"`
 	BudgetCents int64   `json:"budget_cents"`
 	HasBudget   bool    `json:"has_budget"`
+	Inherited   bool    `json:"inherited"`
+	BudgetFrom  string  `json:"budget_from,omitempty"`
 	ActualCents int64   `json:"actual_cents"`
 	RemainCents int64   `json:"remaining_cents"`
 	PercentUsed float64 `json:"percent_used"` // 0 when unbudgeted
@@ -55,7 +57,7 @@ func BuildReport(db *DB, month string) Report {
 	}
 
 	for _, c := range db.Categories {
-		budget, hasBudget := db.BudgetFor(c.ID, month)
+		budget, from, hasBudget := db.BudgetFor(c.ID, month)
 		signed, hasActivity := sums[c.ID]
 		if !hasBudget && !hasActivity {
 			continue
@@ -72,6 +74,8 @@ func BuildReport(db *DB, month string) Report {
 			Kind:        c.Kind,
 			BudgetCents: budget,
 			HasBudget:   hasBudget,
+			Inherited:   hasBudget && from != month,
+			BudgetFrom:  from,
 			ActualCents: actual,
 			TxnCount:    counts[c.ID],
 		}
@@ -134,12 +138,12 @@ func Trend(db *DB, months []string) []MonthTotal {
 				mt.IncomeCents += t.AmountCents
 			}
 		}
-		for _, b := range db.Budgets {
-			if b.Month != m {
+		for _, c := range db.Categories {
+			if c.Kind != KindExpense {
 				continue
 			}
-			if c := db.CategoryByID(b.CategoryID); c != nil && c.Kind == KindExpense {
-				mt.BudgetCents += b.AmountCents
+			if b, _, ok := db.BudgetFor(c.ID, m); ok {
+				mt.BudgetCents += b
 			}
 		}
 		out = append(out, mt)

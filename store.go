@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -47,6 +50,13 @@ type Transaction struct {
 	ExternalID string `json:"external_id,omitempty"`
 }
 
+// Rule files transactions whose description contains Match under a category.
+type Rule struct {
+	ID         int    `json:"id"`
+	Match      string `json:"match"`
+	CategoryID int    `json:"category_id"`
+}
+
 // Budget is a positive monthly allowance for one category.
 type Budget struct {
 	CategoryID  int    `json:"category_id"`
@@ -59,12 +69,39 @@ type DB struct {
 	Categories   []Category    `json:"categories"`
 	Transactions []Transaction `json:"transactions"`
 	Budgets      []Budget      `json:"budgets"`
+	// omitempty keeps both rule fields out of files that have never had a rule.
+	Rules []Rule `json:"rules,omitempty"`
 
 	NextAccountID     int `json:"next_account_id"`
 	NextCategoryID    int `json:"next_category_id"`
 	NextTransactionID int `json:"next_transaction_id"`
+	NextRuleID        int `json:"next_rule_id,omitempty"` // 0 means 1; see AddRule
 
 	path string
+	// loaded is the hash of the file Load read; nil if there was none.
+	loaded []byte
+}
+
+// ErrChangedOnDisk means another process wrote the file after Load.
+var ErrChangedOnDisk = errors.New("the data file changed since it was read (is another budgit running?) — nothing saved, try again")
+
+func fingerprint(data []byte, exists bool) []byte {
+	if !exists {
+		return nil
+	}
+	sum := sha256.Sum256(data)
+	return sum[:]
+}
+
+func onDisk(path string) ([]byte, error) {
+	data, err := os.ReadFile(path) // #nosec G304 -- path is the user's own --file/BUDGIT_FILE, never web input
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return fingerprint(data, true), nil
 }
 
 // DefaultPath is ~/.budgit/budgit.json unless BUDGIT_FILE overrides it.
@@ -81,13 +118,14 @@ func DefaultPath() string {
 
 func Load(path string) (*DB, error) {
 	db := &DB{path: path, NextAccountID: 1, NextCategoryID: 1, NextTransactionID: 1}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path is the user's own --file/BUDGIT_FILE, never web input
 	if os.IsNotExist(err) {
 		return db, nil // first run
 	}
 	if err != nil {
 		return nil, err
 	}
+	db.loaded = fingerprint(data, true)
 	if len(strings.TrimSpace(string(data))) == 0 {
 		return db, nil
 	}
@@ -111,12 +149,18 @@ func Load(path string) (*DB, error) {
 			db.NextTransactionID = t.ID + 1
 		}
 	}
+	for _, r := range db.Rules {
+		if r.ID >= db.NextRuleID {
+			db.NextRuleID = r.ID + 1
+		}
+	}
 	return db, nil
 }
 
-// Save writes atomically: temp file in the same dir, then rename.
+// Save writes atomically (temp file, then rename), and returns
+// ErrChangedOnDisk rather than overwrite another process's write.
 func (db *DB) Save() error {
-	if err := os.MkdirAll(filepath.Dir(db.path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(db.path), 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(db, "", "  ")
@@ -129,9 +173,9 @@ func (db *DB) Save() error {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op once the rename succeeds
+	defer func() { _ = os.Remove(tmpName) }() // no-op once the rename succeeds
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close() // the write error is the one worth returning
 		return err
 	}
 	if err := tmp.Close(); err != nil {
@@ -140,7 +184,19 @@ func (db *DB) Save() error {
 	if err := os.Chmod(tmpName, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, db.path)
+	// Checked last, to keep the race window small.
+	now, err := onDisk(db.path)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(now, db.loaded) {
+		return ErrChangedOnDisk
+	}
+	if err := os.Rename(tmpName, db.path); err != nil {
+		return err
+	}
+	db.loaded = fingerprint(data, true)
+	return nil
 }
 
 // ---- lookup ----
@@ -261,12 +317,12 @@ func (db *DB) CategoryByID(id int) *Category {
 	return nil
 }
 
-// ExternalIDs is the set of bank ids already imported, built once per import so
-// membership is a map lookup per row rather than a rescan.
-func (db *DB) ExternalIDs() map[string]bool {
+// ExternalIDs is the set of bank ids already imported into one account.
+// Per account, because two banks can both number their rows from 1.
+func (db *DB) ExternalIDs(acctID int) map[string]bool {
 	seen := make(map[string]bool, len(db.Transactions))
 	for _, t := range db.Transactions {
-		if t.ExternalID != "" {
+		if t.ExternalID != "" && t.AccountID == acctID {
 			seen[t.ExternalID] = true
 		}
 	}
@@ -282,13 +338,21 @@ func (db *DB) FindTransaction(id int) *Transaction {
 	return nil
 }
 
-func (db *DB) BudgetFor(categoryID int, month string) (int64, bool) {
+// BudgetFor returns the allowance set for month, else the latest earlier one,
+// and the month it was set. A zero allowance stops a budget, so it reports !ok.
+func (db *DB) BudgetFor(categoryID int, month string) (cents int64, from string, ok bool) {
 	for _, b := range db.Budgets {
-		if b.CategoryID == categoryID && b.Month == month {
-			return b.AmountCents, true
+		if b.CategoryID != categoryID || b.Month > month {
+			continue
+		}
+		if b.Month > from {
+			cents, from = b.AmountCents, b.Month
 		}
 	}
-	return 0, false
+	if from == "" || cents == 0 {
+		return 0, "", false
+	}
+	return cents, from, true
 }
 
 func (db *DB) SetBudget(categoryID int, month string, cents int64) {
@@ -299,6 +363,31 @@ func (db *DB) SetBudget(categoryID int, month string, cents int64) {
 		}
 	}
 	db.Budgets = append(db.Budgets, Budget{CategoryID: categoryID, Month: month, AmountCents: cents})
+}
+
+// normMatch lowercases and collapses whitespace; banks pad names unpredictably.
+func normMatch(s string) string {
+	return strings.Join(strings.Fields(strings.ToLower(s)), " ")
+}
+
+// MatchRule returns the category for desc, or 0. The longest pattern wins,
+// lowest ID breaking ties.
+func (db *DB) MatchRule(desc string) int {
+	d := normMatch(desc)
+	if d == "" {
+		return 0
+	}
+	best, bestLen, bestID := 0, 0, 0
+	for _, r := range db.Rules {
+		m := normMatch(r.Match)
+		if m == "" || !strings.Contains(d, m) || db.CategoryByID(r.CategoryID) == nil {
+			continue
+		}
+		if len(m) > bestLen || (len(m) == bestLen && r.ID < bestID) {
+			best, bestLen, bestID = r.CategoryID, len(m), r.ID
+		}
+	}
+	return best
 }
 
 // SortTransactions orders newest first, with ID as the tiebreaker.

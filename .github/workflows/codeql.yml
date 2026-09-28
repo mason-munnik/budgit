@@ -11,11 +11,12 @@
 #
 name: "CodeQL Advanced"
 
+# Not on pull requests: it takes ~2 minutes, and ci.yml's Security job
+# (govulncheck + gosec) is the fast check there. This still covers main.
 on:
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+  workflow_dispatch:
   schedule:
     - cron: '16 20 * * 3'
 

@@ -19,6 +19,9 @@ func TestParseMoney(t *testing.T) {
 		{"-$1,800", -180000, true},
 		{".50", 50, false},
 		{"1234567.89", 123456789, false},
+		{"12,345,678.90", 1234567890, false},
+		{"- 5", -500, true},
+		{"999999999999.99", 99999999999999, false}, // the largest allowed
 	}
 	for _, c := range cases {
 		got, explicit, err := ParseMoney(c.in)
@@ -36,7 +39,12 @@ func TestParseMoney(t *testing.T) {
 }
 
 func TestParseMoneyRejects(t *testing.T) {
-	for _, in := range []string{"", "abc", "1.234", "$", "-", "1.2.3"} {
+	for _, in := range []string{
+		"", "abc", "1.234", "$", "-", "1.2.3", ".",
+		"1.-5", "+-5", "--5", "1.+5", // a second sign hiding past the first
+		"1,50", "1,5", "12,34.00", ",123", "1,,000", // a decimal comma, not grouping
+		"1000000000000", "99999999999999999", // would overflow or is a typo
+	} {
 		if _, _, err := ParseMoney(in); err == nil {
 			t.Errorf("ParseMoney(%q) should have errored", in)
 		}

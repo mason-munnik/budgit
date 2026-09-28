@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	iofs "io/fs"
 	"net"
@@ -52,6 +53,13 @@ type dashboard struct {
 	Trend           []MonthTotal  `json:"trend"`
 	AvailableMonths []string      `json:"available_months"`
 	DataFile        string        `json:"data_file"`
+	Rules           []ruleView    `json:"rules"`
+}
+
+type ruleView struct {
+	ID       int    `json:"id"`
+	Match    string `json:"match"`
+	Category string `json:"category"`
 }
 
 func cmdServe(args []string) error {
@@ -104,7 +112,59 @@ func cmdServe(args []string) error {
 		return err
 	}))
 	mux.HandleFunc("/api/txn/categorize", writeHandler(path, func(db *DB, req writeRequest) error {
-		_, _, err := CategorizeTransaction(db, req.ID, req.Category)
+		if req.None {
+			_, _, err := UncategorizeTransaction(db, req.ID)
+			return err
+		}
+		if _, _, err := CategorizeTransaction(db, req.ID, req.Category); err != nil {
+			return err
+		}
+		// match also adds a rule and applies it to other uncategorized rows.
+		if strings.TrimSpace(req.Match) != "" {
+			if _, err := AddRule(db, req.Match, req.Category); err != nil {
+				return err
+			}
+			ApplyRules(db)
+		}
+		return nil
+	}))
+	mux.HandleFunc("/api/txn/edit", writeHandler(path, func(db *DB, req writeRequest) error {
+		if req.Edit == nil {
+			return fmt.Errorf("nothing to change")
+		}
+		_, err := EditTransaction(db, req.ID, *req.Edit)
+		return err
+	}))
+	mux.HandleFunc("/api/account/add", writeHandler(path, func(db *DB, req writeRequest) error {
+		_, err := AddAccount(db, req.Name, req.Kind, req.Amount)
+		return err
+	}))
+	mux.HandleFunc("/api/account/rename", writeHandler(path, func(db *DB, req writeRequest) error {
+		_, _, err := RenameAccount(db, req.Account, req.Name)
+		return err
+	}))
+	mux.HandleFunc("/api/account/delete", writeHandler(path, func(db *DB, req writeRequest) error {
+		_, err := DeleteAccount(db, req.Account)
+		return err
+	}))
+	mux.HandleFunc("/api/category/rename", writeHandler(path, func(db *DB, req writeRequest) error {
+		_, _, err := RenameCategory(db, req.Category, req.Name)
+		return err
+	}))
+	mux.HandleFunc("/api/category/delete", writeHandler(path, func(db *DB, req writeRequest) error {
+		_, _, err := DeleteCategory(db, req.Category)
+		return err
+	}))
+	mux.HandleFunc("/api/rule/add", writeHandler(path, func(db *DB, req writeRequest) error {
+		if _, err := AddRule(db, req.Match, req.Category); err != nil {
+			return err
+		}
+		// Applied at once: it only ever fills in uncategorized rows.
+		ApplyRules(db)
+		return nil
+	}))
+	mux.HandleFunc("/api/rule/delete", writeHandler(path, func(db *DB, req writeRequest) error {
+		_, err := DeleteRule(db, req.ID)
 		return err
 	}))
 	mux.HandleFunc("/api/account/balance", writeHandler(path, func(db *DB, req writeRequest) error {
@@ -138,7 +198,7 @@ func cmdServe(args []string) error {
 	fmt.Println("press ctrl-c to stop")
 
 	srv := &http.Server{
-		Handler:           mux,
+		Handler:           guard(*addr, mux),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return srv.Serve(ln)
@@ -184,6 +244,11 @@ func buildDashboard(db *DB, month, path string) dashboard {
 	}
 
 	d.AvailableMonths = availableMonths(db, month)
+
+	d.Rules = []ruleView{}
+	for _, r := range db.Rules {
+		d.Rules = append(d.Rules, ruleView{r.ID, r.Match, db.CategoryName(r.CategoryID)})
+	}
 	return d
 }
 
@@ -230,15 +295,18 @@ func latestMonth(db *DB) string {
 // to ParseMoney, so "$1,299", "84.31" and "+24.99" mean the same thing here as
 // they do on the command line.
 type writeRequest struct {
-	Month       string `json:"month"`
-	Date        string `json:"date"`
-	Account     string `json:"account"`
-	Category    string `json:"category"`
-	Description string `json:"description"`
-	Amount      string `json:"amount"`
-	Name        string `json:"name"`
-	Kind        string `json:"kind"`
-	ID          int    `json:"id"`
+	Month       string   `json:"month"`
+	Date        string   `json:"date"`
+	Account     string   `json:"account"`
+	Category    string   `json:"category"`
+	Description string   `json:"description"`
+	Amount      string   `json:"amount"`
+	Name        string   `json:"name"`
+	Kind        string   `json:"kind"`
+	ID          int      `json:"id"`
+	Match       string   `json:"match"` // a rule's text; on categorize, also add that rule
+	None        bool     `json:"none"`  // categorize: back to uncategorized
+	Edit        *txnEdit `json:"edit"`
 }
 
 // writeHandler wraps one mutation with the checks every write shares: POST only,
@@ -278,7 +346,11 @@ func writeHandler(path string, apply func(*DB, writeRequest) error) http.Handler
 			return
 		}
 		if err := db.Save(); err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
+			code := http.StatusInternalServerError
+			if errors.Is(err, ErrChangedOnDisk) {
+				code = http.StatusConflict
+			}
+			writeErr(w, code, err.Error())
 			return
 		}
 
@@ -335,7 +407,34 @@ func writeErr(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg}) // headers are sent; nothing left to report to
+}
+
+// guard checks Host on every route, which stops DNS rebinding, and sets
+// headers that forbid framing and third-party loads.
+func guard(addr string, next http.Handler) http.Handler {
+	allowed := map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
+	if host, _, err := net.SplitHostPort(addr); err == nil && host != "" {
+		allowed[strings.ToLower(host)] = true // an explicit BUDGIT_ALLOW_REMOTE address
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		if !allowed[strings.ToLower(strings.Trim(host, "[]"))] {
+			writeErr(w, http.StatusForbidden, "unexpected Host "+r.Host+"; open the dashboard at http://"+addr)
+			return
+		}
+		h := w.Header()
+		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; "+
+			"style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "+
+			"frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func checkLoopback(addr string) error {

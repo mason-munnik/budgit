@@ -282,6 +282,23 @@ func TestImportDedup(t *testing.T) {
 	}
 }
 
+// Bank ids are only unique per bank, so another account reusing them still imports.
+func TestImportDedupIsPerAccount(t *testing.T) {
+	db := importDB()
+	db.Accounts = append(db.Accounts, Account{ID: 2, Name: "Amex", Type: "credit"})
+	first := mustImport(t, db, "signed.csv", importOptions{})
+
+	opts := importOptions{Cols: map[string]string{}}
+	res, err := ImportCSV(db, filepath.Join("testdata", "signed.csv"), 2, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Imported != first.Imported || res.Duplicates != 0 {
+		t.Errorf("second account: imported %d, %d duplicates; want %d, 0",
+			res.Imported, res.Duplicates, first.Imported)
+	}
+}
+
 func TestImportPairMode(t *testing.T) {
 	db := importDB()
 	res := mustImport(t, db, "pair.csv", importOptions{})

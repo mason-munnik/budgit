@@ -128,6 +128,14 @@ button.editable:hover { color: var(--series-1); border-bottom-color: var(--serie
 .cat-edit select { padding: 3px 8px; font-size: 13px; max-width: 190px; }
 .bal-edit { display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end; }
 .bal-edit input { width: 108px; padding: 4px 8px; text-align: right; font-variant-numeric: tabular-nums; }
+.name-edit { display: inline-flex; align-items: center; gap: 6px; }
+.name-edit input { width: 160px; padding: 3px 8px; }
+.cat-edit { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.cat-edit .always { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-muted); }
+.cat-edit .always input[type=text] { width: 150px; padding: 2px 6px; font-size: 12px; }
+.row-edit input, .row-edit select { padding: 3px 6px; font-size: 13px; width: 100%; min-width: 0; }
+.row-edit input.amt { text-align: right; font-variant-numeric: tabular-nums; }
+.panel { margin-top: 12px; }
 
 .card {
   background: var(--surface);
@@ -205,6 +213,37 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   <section class="card">
     <h2>Accounts</h2>
     <p class="sub">Current balance of each account, including its opening balance.</p>
+
+    <button class="ghost" id="acct-toggle">+ Add account</button>
+    <form class="form hidden" id="acct-form">
+      <div class="form-grid">
+        <div class="field">
+          <label for="a-name">Name</label>
+          <input type="text" id="a-name" placeholder="Chase Checking" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="a-type">Type</label>
+          <select id="a-type">
+            <option value="checking">checking</option>
+            <option value="savings">savings</option>
+            <option value="credit">credit</option>
+            <option value="cash">cash</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="a-balance">Balance now</label>
+          <input type="text" id="a-balance" inputmode="decimal" placeholder="4200 or -499.50" autocomplete="off">
+        </div>
+      </div>
+      <p class="hint">What it holds today, before you record anything. A card you owe on is negative.</p>
+      <p class="form-error hidden" id="acct-error"></p>
+      <div class="form-foot">
+        <button type="submit" class="primary" id="acct-submit">Add</button>
+        <button type="button" class="ghost" id="acct-cancel">Cancel</button>
+        <span class="hint" id="acct-status"></span>
+      </div>
+    </form>
+
     <div class="scroll"><div id="accounts"></div></div>
   </section>
 
@@ -216,6 +255,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
     <div class="btn-row">
       <button class="ghost" id="budget-toggle">Set a budget</button>
       <button class="ghost" id="cat-toggle">+ Add category</button>
+      <button class="ghost" id="cats-toggle">Manage categories</button>
     </div>
 
     <form class="form hidden" id="budget-form">
@@ -229,8 +269,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
           <input type="text" id="b-amount" inputmode="decimal" placeholder="600" autocomplete="off">
         </div>
       </div>
-      <p class="hint">Applies to <span id="b-month"></span> only — every month is budgeted separately.
-         Use this for a category that has no row yet; rows below are edited by clicking their figures.</p>
+      <p class="hint">Starts in <span id="b-month"></span> and carries forward to later months until you
+         change it; set 0 to stop it. Rows below are edited by clicking their figures.</p>
       <p class="form-error hidden" id="budget-error"></p>
       <div class="form-foot">
         <button type="submit" class="primary" id="budget-submit">Set</button>
@@ -263,7 +303,38 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
       </div>
     </form>
 
+    <div class="panel hidden scroll" id="cats-panel"></div>
+
     <div id="meters"></div>
+  </section>
+
+  <section class="card">
+    <h2>Rules</h2>
+    <p class="sub">Any transaction whose description contains the text is filed under the category —
+       on import, when you add one with no category, and right away for anything uncategorized.
+       The longest matching text wins.</p>
+
+    <button class="ghost" id="rule-toggle">+ Add rule</button>
+    <form class="form hidden" id="rule-form">
+      <div class="form-grid">
+        <div class="field">
+          <label for="r-match">Description contains</label>
+          <input type="text" id="r-match" placeholder="trader joe" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="r-category">File under</label>
+          <select id="r-category"></select>
+        </div>
+      </div>
+      <p class="form-error hidden" id="rule-error"></p>
+      <div class="form-foot">
+        <button type="submit" class="primary" id="rule-submit">Add</button>
+        <button type="button" class="ghost" id="rule-cancel">Cancel</button>
+        <span class="hint" id="rule-status"></span>
+      </div>
+    </form>
+
+    <div class="scroll"><div id="rules"></div></div>
   </section>
 
   <section class="card">
@@ -325,7 +396,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   </footer>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<!-- Chart.js 4.4.1 (MIT), vendored so the page loads nothing from third parties. -->
+<script src="chart.umd.js"></script>
 <script>
 // Money arrives as integer cents and is formatted without float arithmetic.
 function money(cents, opts) {
@@ -424,7 +496,9 @@ function render() {
   renderTiles(d, rep);
   renderForm(d);
   renderAccounts(d.accounts);
+  renderCategories(d.categories);
   renderMeters(rep);
+  renderRules(d.rules);
   renderTrend(d.trend);
   renderTxns(d.transactions);
 }
@@ -490,6 +564,19 @@ function renderForm(d) {
     bcat.appendChild(o);
   }
   if (prevBudget && bcat.querySelector('option[value="' + prevBudget + '"]')) bcat.value = prevBudget;
+
+  const rcat = document.getElementById('r-category');
+  const prevRule = rcat.value;
+  rcat.innerHTML = '';
+  for (const c of (d.categories || [])) {
+    const o = el('option', null, c.name + ' \u00b7 ' + c.kind);
+    o.value = String(c.id);
+    rcat.appendChild(o);
+  }
+  if (prevRule && rcat.querySelector('option[value="' + prevRule + '"]')) rcat.value = prevRule;
+  const ruleToggle = document.getElementById('rule-toggle');
+  ruleToggle.disabled = rcat.options.length === 0;
+  ruleToggle.title = rcat.options.length ? '' : 'Add a category first';
   document.getElementById('b-month').textContent = monthLabel(d.month);
 
   const budgetToggle = document.getElementById('budget-toggle');
@@ -502,7 +589,7 @@ function renderForm(d) {
   // Nothing to file a transaction against until an account exists.
   const toggle = document.getElementById('add-toggle');
   toggle.disabled = accounts.length === 0;
-  toggle.title = accounts.length ? '' : 'Add an account first: budgit account add --name "Chase Checking"';
+  toggle.title = accounts.length ? '' : 'Add an account first, under Accounts above';
 }
 
 // Every inline form names its parts with the same id prefix, so one pair of
@@ -524,8 +611,7 @@ function renderAccounts(accounts) {
   const box = document.getElementById('accounts');
   box.innerHTML = '';
   if (!accounts.length) {
-    box.appendChild(el('p', 'empty',
-      'No accounts yet \u2014 add one with: budgit account add --name "Chase Checking"'));
+    box.appendChild(el('p', 'empty', 'No accounts yet \u2014 use \u201c+ Add account\u201d above.'));
     return;
   }
   const tbl = el('table');
@@ -540,11 +626,16 @@ function renderAccounts(accounts) {
   for (const a of accounts) {
     total += a.balance_cents;
     const tr = el('tr');
-    tr.appendChild(el('td', null, a.name));
+    tr.appendChild(nameCell(a.name, 'Rename account ' + a.name,
+      name => post('/api/account/rename', { account: String(a.id), name })));
     tr.appendChild(el('td', 'dim', a.type));
     const bal = el('td', 'num ' + (a.balance_cents < 0 ? 'neg' : 'pos'), money(a.balance_cents));
     tr.appendChild(bal);
-    tr.appendChild(balanceCell(a, bal));
+    const act = balanceCell(a, bal);
+    act.appendChild(deleteButton('Delete account ' + a.name,
+      () => post('/api/account/delete', { account: String(a.id) }),
+      () => renderAccounts(state.accounts)));
+    tr.appendChild(act);
     tb.appendChild(tr);
   }
   // Net worth mirrors `budgit account list`: every balance summed, cards included.
@@ -609,6 +700,147 @@ function balanceCell(a, balTd) {
   return act;
 }
 
+// nameCell is a name that turns into a text box when clicked.
+function nameCell(name, title, save) {
+  const td = el('td');
+  const show = () => {
+    td.innerHTML = '';
+    const btn = el('button', 'editable', name);
+    btn.type = 'button';
+    btn.title = title;
+    btn.addEventListener('click', edit);
+    td.appendChild(btn);
+  };
+  const edit = () => {
+    td.innerHTML = '';
+    const input = el('input');
+    input.type = 'text';
+    input.value = name;
+    input.setAttribute('aria-label', title);
+    const ok = el('button', 'mini', 'Save');
+    const cancel = el('button', 'mini', 'Cancel');
+    ok.type = cancel.type = 'button';
+    const commit = async () => {
+      if (input.value.trim() === name) return show();
+      ok.disabled = cancel.disabled = input.disabled = true;
+      try {
+        await save(input.value);
+      } catch (err) {
+        showError(err.message);
+        show();
+      }
+    };
+    ok.addEventListener('click', commit);
+    cancel.addEventListener('click', show);
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      if (e.key === 'Escape') show();
+    });
+    const wrap = el('span', 'name-edit');
+    wrap.appendChild(input);
+    wrap.appendChild(ok);
+    wrap.appendChild(cancel);
+    td.appendChild(wrap);
+    input.focus();
+    input.select();
+  };
+  show();
+  return td;
+}
+
+// deleteButton asks "Delete?" in place; restore() redraws after No or a failure.
+function deleteButton(label, doDelete, restore, question) {
+  const span = el('span');
+  const x = el('button', 'icon', '\u00d7');
+  x.type = 'button';
+  x.title = label;
+  x.setAttribute('aria-label', label);
+  x.addEventListener('click', () => {
+    span.innerHTML = '';
+    const wrap = el('span', 'confirm');
+    wrap.appendChild(el('span', null, question || 'Delete?'));
+    const yes = el('button', 'mini danger', 'Yes');
+    const no = el('button', 'mini', 'No');
+    yes.type = no.type = 'button';
+    yes.addEventListener('click', async () => {
+      yes.disabled = no.disabled = true;
+      try {
+        await doDelete();
+      } catch (err) {
+        showError(err.message);
+        restore();
+      }
+    });
+    no.addEventListener('click', restore);
+    wrap.appendChild(yes);
+    wrap.appendChild(no);
+    span.appendChild(wrap);
+    yes.focus();
+  });
+  span.appendChild(x);
+  return span;
+}
+
+function renderCategories(cats) {
+  cats = cats || [];
+  const box = document.getElementById('cats-panel');
+  box.innerHTML = '';
+  if (!cats.length) {
+    box.appendChild(el('p', 'empty', 'No categories yet \u2014 use \u201c+ Add category\u201d.'));
+    return;
+  }
+  const tbl = el('table');
+  const thead = el('thead'), hr = el('tr');
+  for (const h of ['Category', 'Kind']) hr.appendChild(el('th', null, h));
+  hr.appendChild(el('th', 'act', ''));
+  thead.appendChild(hr); tbl.appendChild(thead);
+  const tb = el('tbody');
+  for (const c of cats) {
+    const tr = el('tr');
+    tr.appendChild(nameCell(c.name, 'Rename category ' + c.name,
+      name => post('/api/category/rename', { category: String(c.id), name })));
+    tr.appendChild(el('td', 'dim', c.kind));
+    const act = el('td', 'act');
+    act.appendChild(deleteButton('Delete category ' + c.name,
+      () => post('/api/category/delete', { category: String(c.id) }),
+      () => renderCategories(state.categories),
+      'Delete? Its transactions become uncategorized'));
+    tr.appendChild(act);
+    tb.appendChild(tr);
+  }
+  tbl.appendChild(tb);
+  box.appendChild(tbl);
+}
+
+function renderRules(rules) {
+  rules = rules || [];
+  const box = document.getElementById('rules');
+  box.innerHTML = '';
+  if (!rules.length) {
+    box.appendChild(el('p', 'empty', 'No rules yet. Add one here, or tick \u201calways file\u201d when you refile a transaction.'));
+    return;
+  }
+  const tbl = el('table');
+  const thead = el('thead'), hr = el('tr');
+  for (const h of ['Description contains', 'Files under']) hr.appendChild(el('th', null, h));
+  hr.appendChild(el('th', 'act', ''));
+  thead.appendChild(hr); tbl.appendChild(thead);
+  const tb = el('tbody');
+  for (const r of rules) {
+    const tr = el('tr');
+    tr.appendChild(el('td', null, r.match));
+    tr.appendChild(el('td', 'dim', r.category));
+    const act = el('td', 'act');
+    act.appendChild(deleteButton('Delete rule ' + r.match,
+      () => post('/api/rule/delete', { id: r.id }),
+      () => renderRules(state.rules)));
+    tr.appendChild(act);
+    tb.appendChild(tr);
+  }
+  tbl.appendChild(tb);
+  box.appendChild(tbl);
+}
+
 function renderMeters(rep) {
   const rows = rep.expenses || [];
   const box = document.getElementById('meters');
@@ -649,10 +881,11 @@ function renderMeters(rep) {
 function budgetButton(r, figs) {
   const label = r.has_budget
     ? money(r.actual_cents) + ' / ' + money(r.budget_cents, {whole:true}) + '  ·  ' + Math.round(r.percent_used) + '%'
+      + (r.inherited ? '  ·  from ' + monthLabel(r.budget_from) : '')
     : money(r.actual_cents);
   const btn = el('button', 'editable', label);
   btn.type = 'button';
-  btn.title = (r.has_budget ? 'Change' : 'Set') + ' the ' + r.category + ' allowance for this month';
+  btn.title = (r.has_budget ? 'Change' : 'Set') + ' the ' + r.category + ' allowance from this month on';
   btn.addEventListener('click', () => {
     figs.innerHTML = '';
 
@@ -696,7 +929,7 @@ function budgetButton(r, figs) {
 
 function renderTrend(trend) {
   trend = trend || [];
-  // Table view is always built — it is the fallback when the CDN is unreachable
+  // Table view is always built — it is the fallback if the chart script fails
   // and the accessible alternative to the plot.
   const tbl = el('table');
   const thead = el('thead');
@@ -722,7 +955,7 @@ function renderTrend(trend) {
 
   const box = document.getElementById('trend-box');
   if (typeof Chart === 'undefined') {
-    // Offline: drop the canvas and promote the table. The swatch legend goes
+    // No chart library: drop the canvas and promote the table. The swatch legend goes
     // with it — the table's own column headers carry the same identity.
     box.classList.add('hidden');
     holder.classList.remove('hidden');
@@ -807,7 +1040,7 @@ function renderTxns(txns) {
     tr.appendChild(categoryCell(t));
     tr.appendChild(el('td', 'dim', t.account));
     tr.appendChild(el('td', 'num ' + (t.amount_cents < 0 ? '' : 'pos'), money(t.amount_cents)));
-    tr.appendChild(deleteCell(t));
+    tr.appendChild(deleteCell(t, tr));
     tb.appendChild(tr);
   }
   tbl.appendChild(tb);
@@ -826,11 +1059,8 @@ function categoryCell(t) {
 
     const sel = el('select');
     sel.setAttribute('aria-label', 'Category for ' + (t.description || t.date));
-    // Shown so the current state reads correctly, but there is no way back to
-    // uncategorized: the CLI cannot do it either.
     const none = el('option', null, '(uncategorized)');
     none.value = '';
-    none.disabled = true;
     sel.appendChild(none);
     for (const c of (state.categories || [])) {
       const o = el('option', null, c.name + ' \u00b7 ' + c.kind);
@@ -840,11 +1070,28 @@ function categoryCell(t) {
     }
     if (t.category === '(uncategorized)') none.selected = true;
 
+    // Ticked before choosing, since choosing posts.
+    const always = el('label', 'always');
+    const tick = el('input');
+    tick.type = 'checkbox';
+    const match = el('input');
+    match.type = 'text';
+    match.value = t.description || '';
+    match.setAttribute('aria-label', 'Text the rule matches');
+    always.appendChild(tick);
+    always.appendChild(document.createTextNode('always file'));
+    always.appendChild(match);
+    always.appendChild(document.createTextNode('here'));
+    if (!t.description) always.classList.add('hidden');
+
     sel.addEventListener('change', async () => {
-      if (!sel.value) return;
-      sel.disabled = true;
+      if (sel.value === '' && t.category === '(uncategorized)') return;
+      sel.disabled = tick.disabled = match.disabled = true;
+      const body = sel.value === ''
+        ? { id: t.id, none: true }
+        : { id: t.id, category: sel.value, match: tick.checked ? match.value : '' };
       try {
-        await post('/api/txn/categorize', { id: t.id, category: sel.value });
+        await post('/api/txn/categorize', body);
       } catch (err) {
         showError(err.message);
         renderTxns(state.transactions);
@@ -856,6 +1103,7 @@ function categoryCell(t) {
 
     const wrap = el('span', 'cat-edit');
     wrap.appendChild(sel);
+    wrap.appendChild(always);
     td.appendChild(wrap);
     sel.focus();
   });
@@ -863,38 +1111,89 @@ function categoryCell(t) {
   return td;
 }
 
-// deleteCell asks in the row rather than through confirm(), so a misclick is
-// one more click to undo instead of a modal you dismiss by reflex.
-function deleteCell(t) {
+// deleteCell holds the row's edit and delete buttons.
+function deleteCell(t, tr) {
   const act = el('td', 'act');
-  const x = el('button', 'icon', '\u00d7');
-  x.type = 'button';
-  x.title = 'Delete this transaction';
-  x.setAttribute('aria-label',
-    'Delete transaction: ' + t.date + ' ' + (t.description || t.category) + ' ' + money(t.amount_cents));
-  x.addEventListener('click', () => {
-    act.innerHTML = '';
-    const wrap = el('span', 'confirm');
-    wrap.appendChild(el('span', null, 'Delete?'));
-    const yes = el('button', 'mini danger', 'Yes');
-    const no = el('button', 'mini', 'No');
-    yes.type = no.type = 'button';
-    yes.addEventListener('click', async () => {
-      yes.disabled = no.disabled = true;
-      try {
-        await post('/api/txn/delete', { id: t.id });
-      } catch (err) {
-        showError(err.message);
-        renderTxns(state.transactions);
-      }
-    });
-    no.addEventListener('click', () => renderTxns(state.transactions));
-    wrap.appendChild(yes);
-    wrap.appendChild(no);
-    act.appendChild(wrap);
-  });
-  act.appendChild(x);
+  const pen = el('button', 'icon', '\u270e');
+  pen.type = 'button';
+  pen.title = 'Edit this transaction';
+  pen.setAttribute('aria-label', 'Edit transaction: ' + t.date + ' ' + (t.description || t.category));
+  pen.addEventListener('click', () => editRow(t, tr));
+  act.appendChild(pen);
+  act.appendChild(deleteButton(
+    'Delete transaction: ' + t.date + ' ' + (t.description || t.category) + ' ' + money(t.amount_cents),
+    () => post('/api/txn/delete', { id: t.id }),
+    () => renderTxns(state.transactions)));
   return act;
+}
+
+// editRow edits everything but the category in place.
+function editRow(t, tr) {
+  tr.innerHTML = '';
+  tr.classList.add('row-edit');
+  const cell = (node, cls) => { const td = el('td', cls); td.appendChild(node); tr.appendChild(td); return node; };
+
+  const date = cell(el('input'));
+  date.type = 'date';
+  date.value = t.date;
+  date.setAttribute('aria-label', 'Date');
+
+  const desc = cell(el('input'));
+  desc.type = 'text';
+  desc.value = t.description;
+  desc.setAttribute('aria-label', 'Description');
+
+  tr.appendChild(el('td', 'dim', t.category));
+
+  const acct = cell(el('select'));
+  acct.setAttribute('aria-label', 'Account');
+  for (const a of state.accounts) {
+    const o = el('option', null, a.name);
+    o.value = String(a.id);
+    if (a.name === t.account) o.selected = true;
+    acct.appendChild(o);
+  }
+
+  const amt = cell(el('input', 'amt'), 'num');
+  amt.type = 'text';
+  amt.inputMode = 'decimal';
+  amt.value = plain(t.amount_cents);
+  amt.setAttribute('aria-label', 'Amount');
+
+  const act = el('td', 'act');
+  const save = el('button', 'mini', 'Save');
+  const cancel = el('button', 'mini', 'Cancel');
+  save.type = cancel.type = 'button';
+  act.appendChild(save);
+  act.appendChild(cancel);
+  tr.appendChild(act);
+
+  const inputs = [date, desc, acct, amt, save, cancel];
+  const commit = async () => {
+    inputs.forEach(n => n.disabled = true);
+    const edit = {};
+    if (date.value !== t.date) edit.date = date.value;
+    if (desc.value !== t.description) edit.description = desc.value;
+    if (acct.selectedOptions[0] && acct.selectedOptions[0].textContent !== t.account) edit.account = acct.value;
+    if (amt.value !== plain(t.amount_cents)) edit.amount = amt.value;
+    if (!Object.keys(edit).length) return renderTxns(state.transactions);
+    try {
+      // Follow the row if its new date moves it into another month.
+      await post('/api/txn/edit', { id: t.id, edit, month: (edit.date || t.date).slice(0, 7) });
+    } catch (err) {
+      showError(err.message);
+      inputs.forEach(n => n.disabled = false);
+    }
+  };
+  save.addEventListener('click', commit);
+  cancel.addEventListener('click', () => renderTxns(state.transactions));
+  for (const n of [date, desc, acct, amt]) {
+    n.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      if (e.key === 'Escape') renderTxns(state.transactions);
+    });
+  }
+  desc.focus();
 }
 
 // ---- wiring ----
@@ -990,6 +1289,43 @@ wireForm('cat', '/api/category/add', {
     name.focus();
   },
 });
+wireForm('acct', '/api/account/add', {
+  onOpen: () => document.getElementById('a-name').focus(),
+  clears: ['a-name', 'a-balance'],
+  body: () => ({
+    name: document.getElementById('a-name').value,
+    kind: document.getElementById('a-type').value,
+    amount: document.getElementById('a-balance').value,
+  }),
+  onDone: () => {
+    const name = document.getElementById('a-name');
+    formStatus('acct', 'Added \u201c' + name.value.trim() + '\u201d.');
+    name.value = '';
+    document.getElementById('a-balance').value = '';
+    name.focus();
+  },
+});
+
+wireForm('rule', '/api/rule/add', {
+  onOpen: () => document.getElementById('r-match').focus(),
+  clears: ['r-match'],
+  body: () => ({
+    match: document.getElementById('r-match').value,
+    category: document.getElementById('r-category').value,
+  }),
+  onDone: () => {
+    const m = document.getElementById('r-match');
+    formStatus('rule', 'Added \u201c' + m.value.trim() + '\u201d and filed any uncategorized matches.');
+    m.value = '';
+    m.focus();
+  },
+});
+
+document.getElementById('cats-toggle').addEventListener('click', () => {
+  const open = document.getElementById('cats-panel').classList.toggle('hidden') === false;
+  document.getElementById('cats-toggle').textContent = open ? 'Done' : 'Manage categories';
+});
+
 document.getElementById('trend-toggle').addEventListener('click', () => {
   const box = document.getElementById('trend-box');
   const tbl = document.getElementById('trend-table');
@@ -1003,10 +1339,11 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
   const dark = cur ? cur === 'dark'
     : window.matchMedia('(prefers-color-scheme: dark)').matches;
   document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark');
-  localStorage.setItem('budgit-theme', dark ? 'light' : 'dark');
+  try { localStorage.setItem('budgit-theme', dark ? 'light' : 'dark'); } catch (e) { /* private window */ }
   if (state) renderTrend(state.trend); // chart colors are baked in at draw time
 });
-const saved = localStorage.getItem('budgit-theme');
+let saved = null;
+try { saved = localStorage.getItem('budgit-theme'); } catch (e) { /* private window */ }
 if (saved) document.documentElement.setAttribute('data-theme', saved);
 
 load();
