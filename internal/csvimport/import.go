@@ -1,4 +1,4 @@
-package main
+package csvimport
 
 import (
 	"errors"
@@ -6,11 +6,14 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/mason-munnik/budgit/internal/money"
+	"github.com/mason-munnik/budgit/internal/store"
 )
 
-// importOptions carries every flag `budgit txn import` accepts. Zero values mean
+// Options carries every flag `budgit txn import` accepts. Zero values mean
 // "work it out from the file".
-type importOptions struct {
+type Options struct {
 	DryRun     bool
 	Invert     bool
 	NoInvert   bool
@@ -123,7 +126,7 @@ func parseCents(raw string, decimalSep byte) (cents int64, ok bool, err error) {
 	if norm == "" {
 		return 0, false, nil
 	}
-	cents, _, err = ParseMoney(norm)
+	cents, _, err = money.ParseMoney(norm)
 	if err != nil {
 		return 0, false, err
 	}
@@ -221,13 +224,13 @@ var bankCategoryAliases = map[string]string{
 
 // categoryResolver chooses a row's category: your rules first, then the bank's label.
 type categoryResolver struct {
-	db       *DB               // rules; nil when --no-rules
+	db       *store.DB         // rules; nil when --no-rules
 	byName   map[string]int    // lowercased budgit category name -> id
 	user     map[string]string // lowercased bank label -> budgit category name
 	disabled bool              // --no-category: ignore the bank's label
 }
 
-func newCategoryResolver(db *DB, opts importOptions) (*categoryResolver, error) {
+func newCategoryResolver(db *store.DB, opts Options) (*categoryResolver, error) {
 	r := &categoryResolver{
 		byName:   make(map[string]int, len(db.Categories)),
 		user:     map[string]string{},
@@ -286,24 +289,24 @@ func (r *categoryResolver) resolveLabel(label string) int {
 	return 0
 }
 
-// suspectRow is a row budgit imported but thinks you may already have. It does
+// SuspectRow is a row budgit imported but thinks you may already have. It does
 // not skip it: two identical purchases on one day are real, and only you can
 // tell them apart from an export that renumbered its own ids.
-type suspectRow struct {
+type SuspectRow struct {
 	Date       string
 	Desc       string
 	Cents      int64
 	ExistingID int
 }
 
-type previewRow struct {
+type PreviewRow struct {
 	Date     string
 	Desc     string
 	Category string
 	Cents    int64
 }
 
-type importResult struct {
+type Result struct {
 	Path     string
 	Dialect  *dialect
 	Rows     int
@@ -318,17 +321,17 @@ type importResult struct {
 	ByRule      int // the part of Categorized that a rule chose
 	AssumedOut  int
 
-	Suspects []suspectRow
-	Preview  []previewRow
+	Suspects []SuspectRow
+	Preview  []PreviewRow
 }
 
 const previewLimit = 12
 
-// ImportCSV reads path and appends what it finds to db. The whole file is parsed
+// Import reads path and appends what it finds to db. The whole file is parsed
 // and validated before anything is appended, so a row budgit cannot understand
 // aborts the import with nothing written — a half-imported statement is worse
 // than none. The caller saves.
-func ImportCSV(db *DB, path string, acctID int, opts importOptions) (*importResult, error) {
+func Import(db *store.DB, path string, acctID int, opts Options) (*Result, error) {
 	if opts.Invert && opts.NoInvert {
 		return nil, fmt.Errorf("--invert and --no-invert contradict each other")
 	}
@@ -379,7 +382,7 @@ func ImportCSV(db *DB, path string, acctID int, opts importOptions) (*importResu
 		}
 	}
 
-	res := &importResult{Path: path, Dialect: d, Rows: len(rows)}
+	res := &Result{Path: path, Dialect: d, Rows: len(rows)}
 
 	// Staged, not appended: nothing touches db until the whole file parses.
 	type staged struct {
@@ -469,7 +472,7 @@ func ImportCSV(db *DB, path string, acctID int, opts importOptions) (*importResu
 		// Consumed one-for-one, so a file holding three genuine repeats against
 		// one existing row warns once rather than three times.
 		if idxs := settled[claimKey{date, cents}]; len(idxs) > 0 {
-			res.Suspects = append(res.Suspects, suspectRow{
+			res.Suspects = append(res.Suspects, SuspectRow{
 				Date: date, Desc: desc, Cents: cents,
 				ExistingID: db.Transactions[idxs[0]].ID,
 			})
@@ -477,7 +480,7 @@ func ImportCSV(db *DB, path string, acctID int, opts importOptions) (*importResu
 		}
 		pending = append(pending, staged{date, desc, extID, catID, cents})
 		if len(res.Preview) < previewLimit {
-			res.Preview = append(res.Preview, previewRow{
+			res.Preview = append(res.Preview, PreviewRow{
 				Date: date, Desc: desc, Cents: cents,
 				Category: db.CategoryName(catID),
 			})
@@ -495,7 +498,7 @@ func ImportCSV(db *DB, path string, acctID int, opts importOptions) (*importResu
 		db.Transactions[a.txn].ExternalID = a.extID
 	}
 	for _, p := range pending {
-		appendTransaction(db, p.date, acctID, p.catID, p.desc, p.cents, p.extID)
+		store.AppendTransaction(db, p.date, acctID, p.catID, p.desc, p.cents, p.extID)
 	}
 	return res, nil
 }
@@ -507,4 +510,11 @@ func ImportCSV(db *DB, path string, acctID int, opts importOptions) (*importResu
 type claimKey struct {
 	date  string
 	cents int64
+}
+
+func abs(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }

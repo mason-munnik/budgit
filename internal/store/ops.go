@@ -1,8 +1,10 @@
-package main
+package store
 
 import (
 	"fmt"
 	"strings"
+
+	"github.com/mason-munnik/budgit/internal/money"
 )
 
 // The mutations below are the single implementation shared by the CLI and the
@@ -33,7 +35,7 @@ func AddTransaction(db *DB, date, acctRef, catRef, desc, amount string) (*Transa
 	if err != nil {
 		return nil, err
 	}
-	cents, explicit, err := ParseMoney(amount)
+	cents, explicit, err := money.ParseMoney(amount)
 	if err != nil {
 		return nil, err
 	}
@@ -63,13 +65,13 @@ func AddTransaction(db *DB, date, acctRef, catRef, desc, amount string) (*Transa
 		cents = -abs(cents)
 	}
 
-	return appendTransaction(db, d, a.ID, catID, desc, cents, ""), nil
+	return AppendTransaction(db, d, a.ID, catID, desc, cents, ""), nil
 }
 
-// appendTransaction is the one place a Transaction is created and handed an ID.
+// AppendTransaction is the one place a Transaction is created and handed an ID.
 // Callers pass the amount in final signed cents: AddTransaction after it has
 // inferred a direction, the CSV importer straight from the file.
-func appendTransaction(db *DB, date string, acctID, catID int, desc string, cents int64, extID string) *Transaction {
+func AppendTransaction(db *DB, date string, acctID, catID int, desc string, cents int64, extID string) *Transaction {
 	t := Transaction{
 		ID: db.NextTransactionID, Date: date, AccountID: acctID,
 		CategoryID: catID, Description: strings.TrimSpace(desc),
@@ -108,7 +110,7 @@ func SetAccountBalance(db *DB, acctRef, amount string) (*Account, int64, error) 
 	}
 	// Always explicit here: there is no category to infer a sign from,
 	// so "-499.50" means you owe and "4200" means you hold.
-	want, _, err := ParseMoney(amount)
+	want, _, err := money.ParseMoney(amount)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -164,7 +166,7 @@ func SetCategoryBudget(db *DB, catRef, month, amount string) (*Category, string,
 	if err != nil {
 		return nil, "", 0, err
 	}
-	cents, _, err := ParseMoney(amount)
+	cents, _, err := money.ParseMoney(amount)
 	if err != nil {
 		return nil, "", 0, err
 	}
@@ -257,21 +259,21 @@ func DeleteRule(db *DB, id int) (Rule, error) {
 	return Rule{}, fmt.Errorf("no rule with id %d", id)
 }
 
-// ruleHit is one uncategorized transaction a rule would file.
-type ruleHit struct {
+// RuleHit is one uncategorized transaction a rule would file.
+type RuleHit struct {
 	TxnID      int
 	CategoryID int
 }
 
 // RuleHits lists what ApplyRules would file, changing nothing.
-func RuleHits(db *DB) []ruleHit {
-	var hits []ruleHit
+func RuleHits(db *DB) []RuleHit {
+	var hits []RuleHit
 	for _, t := range db.Transactions {
 		if t.CategoryID != 0 {
 			continue
 		}
 		if id := db.MatchRule(t.Description); id != 0 {
-			hits = append(hits, ruleHit{t.ID, id})
+			hits = append(hits, RuleHit{t.ID, id})
 		}
 	}
 	return hits
@@ -279,7 +281,7 @@ func RuleHits(db *DB) []ruleHit {
 
 // ApplyRules files uncategorized matches. It sets only the category:
 // CategorizeTransaction would force the sign and turn a refund into a purchase.
-func ApplyRules(db *DB) []ruleHit {
+func ApplyRules(db *DB) []RuleHit {
 	hits := RuleHits(db)
 	for _, h := range hits {
 		db.FindTransaction(h.TxnID).CategoryID = h.CategoryID
@@ -303,7 +305,7 @@ func AddAccount(db *DB, name, typ, balance string) (*Account, error) {
 	var opening int64
 	if strings.TrimSpace(balance) != "" {
 		var err error
-		if opening, _, err = ParseMoney(balance); err != nil {
+		if opening, _, err = money.ParseMoney(balance); err != nil {
 			return nil, err
 		}
 	}
@@ -385,13 +387,13 @@ func RenameCategory(db *DB, ref, name string) (*Category, string, error) {
 	return c, was, nil
 }
 
-type categoryRemoval struct {
+type CategoryRemoval struct {
 	Txns, Budgets, Rules int
 }
 
 // DeleteCategory uncategorizes its transactions and drops its budgets and rules.
-func DeleteCategory(db *DB, ref string) (Category, categoryRemoval, error) {
-	var n categoryRemoval
+func DeleteCategory(db *DB, ref string) (Category, CategoryRemoval, error) {
+	var n CategoryRemoval
 	c, err := db.FindCategory(ref)
 	if err != nil {
 		return Category{}, n, err
@@ -441,8 +443,8 @@ func UncategorizeTransaction(db *DB, id int) (*Transaction, string, error) {
 	return t, was, nil
 }
 
-// txnEdit is a partial update; nil fields are left alone.
-type txnEdit struct {
+// TxnEdit is a partial update; nil fields are left alone.
+type TxnEdit struct {
 	Date        *string `json:"date,omitempty"`
 	Account     *string `json:"account,omitempty"`
 	Description *string `json:"description,omitempty"`
@@ -451,7 +453,7 @@ type txnEdit struct {
 
 // EditTransaction validates every field before changing any. An unsigned
 // amount keeps the transaction's current direction.
-func EditTransaction(db *DB, id int, e txnEdit) (*Transaction, error) {
+func EditTransaction(db *DB, id int, e TxnEdit) (*Transaction, error) {
 	t := db.FindTransaction(id)
 	if t == nil {
 		return nil, fmt.Errorf("no transaction with id %d", id)
@@ -475,7 +477,7 @@ func EditTransaction(db *DB, id int, e txnEdit) (*Transaction, error) {
 		desc = strings.TrimSpace(*e.Description)
 	}
 	if e.Amount != nil {
-		c, explicit, err := ParseMoney(*e.Amount)
+		c, explicit, err := money.ParseMoney(*e.Amount)
 		if err != nil {
 			return nil, err
 		}
@@ -510,4 +512,18 @@ func RuleReach(db *DB, match string) (all, uncategorized int) {
 		}
 	}
 	return all, uncategorized
+}
+
+func abs(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }

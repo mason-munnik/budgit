@@ -23,7 +23,7 @@ for t in "${targets[@]}"; do
   [ "$os" = windows ] && bin="$bin.exe"
   mkdir -p "$OUT/$name"
   CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-    go build -trimpath -ldflags="-s -w" -o "$bin" .
+    go build -trimpath -ldflags="-s -w" -o "$bin" ./cmd/budgit
   cp README.md LICENSE "$OUT/$name/" 2>/dev/null || true
   (cd "$OUT" && if [ "$os" = windows ]; then zip -qr "$name.zip" "$name"; \
                 else tar czf "$name.tar.gz" "$name"; fi && rm -rf "$name")

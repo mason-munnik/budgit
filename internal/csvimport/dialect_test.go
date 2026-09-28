@@ -1,4 +1,4 @@
-package main
+package csvimport
 
 import (
 	"os"
@@ -15,7 +15,7 @@ func loadFixture(t *testing.T, name string) []byte {
 	return b
 }
 
-func detect(t *testing.T, name string, opts importOptions) (*dialect, [][]string) {
+func detect(t *testing.T, name string, opts Options) (*dialect, [][]string) {
 	t.Helper()
 	if opts.Cols == nil {
 		opts.Cols = map[string]string{}
@@ -50,7 +50,7 @@ func TestStripBOMAndPreamble(t *testing.T) {
 	if raw[0] != 0xEF {
 		t.Fatal("fixture lost its BOM; this test is not testing anything")
 	}
-	d, rows := detect(t, "preamble.csv", importOptions{})
+	d, rows := detect(t, "preamble.csv", Options{})
 	if d.HeaderLine != 4 {
 		t.Errorf("header on line %d, want 4 (three preamble lines above it)", d.HeaderLine)
 	}
@@ -63,7 +63,7 @@ func TestStripBOMAndPreamble(t *testing.T) {
 }
 
 func TestColumnAliasing(t *testing.T) {
-	d, _ := detect(t, "signed.csv", importOptions{})
+	d, _ := detect(t, "signed.csv", Options{})
 	// "Posting Date" must win over "Effective Date", which becomes the fallback.
 	if got := d.Header[d.Date]; got != "Posting Date" {
 		t.Errorf("date column = %q, want Posting Date", got)
@@ -92,17 +92,17 @@ func TestColumnAliasing(t *testing.T) {
 
 func TestColumnOverrides(t *testing.T) {
 	// By name: force the effective date to be the primary.
-	d, _ := detect(t, "signed.csv", importOptions{Cols: map[string]string{"date": "Effective Date"}})
+	d, _ := detect(t, "signed.csv", Options{Cols: map[string]string{"date": "Effective Date"}})
 	if d.Header[d.Date] != "Effective Date" {
 		t.Errorf("override by name failed: got %q", d.Header[d.Date])
 	}
 	// By index.
-	d, _ = detect(t, "signed.csv", importOptions{Cols: map[string]string{"desc": "0"}})
+	d, _ = detect(t, "signed.csv", Options{Cols: map[string]string{"desc": "0"}})
 	if d.Desc != 0 {
 		t.Errorf("override by index failed: got %d", d.Desc)
 	}
 	// A name that is not there must say so, and list what is.
-	_, _, _, err := detectDialect(loadFixture(t, "signed.csv"), importOptions{
+	_, _, _, err := detectDialect(loadFixture(t, "signed.csv"), Options{
 		Cols: map[string]string{"amount": "Nope"}})
 	if err == nil {
 		t.Fatal("expected an error for an unknown column name")
@@ -113,7 +113,7 @@ func TestColumnOverrides(t *testing.T) {
 }
 
 func TestNoAmountColumnRejected(t *testing.T) {
-	_, _, _, err := detectDialect(loadFixture(t, "noamount.csv"), importOptions{Cols: map[string]string{}})
+	_, _, _, err := detectDialect(loadFixture(t, "noamount.csv"), Options{Cols: map[string]string{}})
 	if err == nil {
 		t.Fatal("a file with no amount source must be rejected")
 	}
@@ -133,7 +133,7 @@ func TestAmountModeDetection(t *testing.T) {
 		{"inverted.csv", modeSigned}, // a negative row rules out "unsigned + type"
 	}
 	for _, c := range cases {
-		d, _ := detect(t, c.file, importOptions{})
+		d, _ := detect(t, c.file, Options{})
 		if d.Mode != c.want {
 			t.Errorf("%s: mode = %v, want %v", c.file, d.Mode, c.want)
 		}
@@ -141,11 +141,11 @@ func TestAmountModeDetection(t *testing.T) {
 }
 
 func TestDecimalCommaFollowsSemicolon(t *testing.T) {
-	d, _ := detect(t, "semicolon.csv", importOptions{})
+	d, _ := detect(t, "semicolon.csv", Options{})
 	if d.DecimalSep != ',' {
 		t.Errorf("decimal separator = %q, want ','", d.DecimalSep)
 	}
-	d, _ = detect(t, "semicolon.csv", importOptions{Decimal: "dot"})
+	d, _ = detect(t, "semicolon.csv", Options{Decimal: "dot"})
 	if d.DecimalSep != '.' {
 		t.Errorf("--decimal dot ignored, got %q", d.DecimalSep)
 	}
@@ -173,7 +173,7 @@ func TestDirectionWord(t *testing.T) {
 
 // The file whose signs contradict its own type column must refuse to guess.
 func TestSignConflictDetected(t *testing.T) {
-	d, rows := detect(t, "inverted.csv", importOptions{})
+	d, rows := detect(t, "inverted.csv", Options{})
 	err := d.checkSigns(rows)
 	if err == nil {
 		t.Fatal("inverted card export should have been flagged")
@@ -197,7 +197,7 @@ func TestSignConflictDetected(t *testing.T) {
 
 // A consistent file must not be flagged.
 func TestSignConflictQuietOnConsistentFile(t *testing.T) {
-	d, rows := detect(t, "signed.csv", importOptions{})
+	d, rows := detect(t, "signed.csv", Options{})
 	if err := d.checkSigns(rows); err != nil {
 		t.Errorf("a consistent export was flagged: %v", err)
 	}

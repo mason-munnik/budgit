@@ -9,13 +9,13 @@ You need [Go](https://go.dev/dl/) installed. Nothing else.
 ```sh
 git clone https://github.com/mason-munnik/budgit.git
 cd budgit
-go build -o budgit .
+go build -o budgit ./cmd/budgit
 ```
 
-On Windows, name the output `budgit.exe` instead — `go build -o budgit .` writes exactly the name you give it, with no extension, and Windows will not run that file:
+On Windows, name the output `budgit.exe` instead — `go build -o budgit ./cmd/budgit` writes exactly the name you give it, with no extension, and Windows will not run that file:
 
 ```powershell
-go build -o budgit.exe .
+go build -o budgit.exe ./cmd/budgit
 ```
 
 That is the whole install. To run it from anywhere:

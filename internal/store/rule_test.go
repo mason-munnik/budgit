@@ -1,4 +1,4 @@
-package main
+package store
 
 import (
 	"os"
@@ -17,7 +17,7 @@ func mustRule(t *testing.T, db *DB, match, cat string) *Rule {
 }
 
 func TestMatchRule(t *testing.T) {
-	db := importDB()
+	db := ruleDB()
 	mustRule(t, db, "amazon", "Shopping")
 	mustRule(t, db, "Amazon Prime", "Utilities") // added later, still wins: longer
 	mustRule(t, db, "trader joe", "Groceries")
@@ -37,7 +37,7 @@ func TestMatchRule(t *testing.T) {
 }
 
 func TestMatchRuleTiesAndMissingCategories(t *testing.T) {
-	db := importDB()
+	db := ruleDB()
 	// Equal length: the lower id wins, whatever order they sit in.
 	db.Rules = []Rule{{ID: 5, Match: "shell", CategoryID: 3}, {ID: 2, Match: "kum &", CategoryID: 4}}
 	if got := db.CategoryName(db.MatchRule("kum & go shell")); got != "Eating-Out" {
@@ -51,7 +51,7 @@ func TestMatchRuleTiesAndMissingCategories(t *testing.T) {
 }
 
 func TestAddAndDeleteRule(t *testing.T) {
-	db := importDB()
+	db := ruleDB()
 	for _, c := range []struct{ match, cat string }{
 		{"   ", "Groceries"},    // nothing to match
 		{"aldi", "Nonexistent"}, // unknown category
@@ -84,11 +84,11 @@ func TestAddAndDeleteRule(t *testing.T) {
 }
 
 func TestApplyRules(t *testing.T) {
-	db := importDB()
-	appendTransaction(db, "2026-09-01", 1, 0, "AMAZON RETA* 1", -2899, "a")     // purchase
-	appendTransaction(db, "2026-09-02", 1, 0, "AMAZON REFUND", 1500, "b")       // refund
-	appendTransaction(db, "2026-09-03", 1, 3, "Amazon gift for gas", -500, "c") // already filed
-	appendTransaction(db, "2026-09-04", 1, 0, "Kum & Go", -3406, "d")           // no rule
+	db := ruleDB()
+	AppendTransaction(db, "2026-09-01", 1, 0, "AMAZON RETA* 1", -2899, "a")     // purchase
+	AppendTransaction(db, "2026-09-02", 1, 0, "AMAZON REFUND", 1500, "b")       // refund
+	AppendTransaction(db, "2026-09-03", 1, 3, "Amazon gift for gas", -500, "c") // already filed
+	AppendTransaction(db, "2026-09-04", 1, 0, "Kum & Go", -3406, "d")           // no rule
 
 	mustRule(t, db, "amazon", "Shopping")
 	if n := len(RuleHits(db)); n != 2 {
@@ -149,49 +149,6 @@ func TestAddTransactionUsesRules(t *testing.T) {
 	}
 }
 
-func TestImportRules(t *testing.T) {
-	// The rule overrides the bank's Shopping label and places what the label could not.
-	withRules := func() *DB {
-		db := importDB()
-		mustRule(t, db, "amazon", "Utilities")
-		mustRule(t, db, "payment to chase", "Utilities")
-		return db
-	}
-
-	db := withRules()
-	res := mustImport(t, db, "signed.csv", importOptions{})
-	for _, d := range []string{"Amazon", "Payment to Chase"} {
-		if got := db.CategoryName(txnByDesc(db, d).CategoryID); got != "Utilities" {
-			t.Errorf("%s -> %s, want Utilities (rule)", d, got)
-		}
-	}
-	if res.ByRule != 2 {
-		t.Errorf("ByRule = %d, want 2", res.ByRule)
-	}
-
-	db = withRules()
-	res = mustImport(t, db, "signed.csv", importOptions{NoRules: true})
-	if got := db.CategoryName(txnByDesc(db, "Amazon").CategoryID); got != "Shopping" {
-		t.Errorf("--no-rules: Amazon -> %s, want the bank's Shopping", got)
-	}
-	if res.ByRule != 0 {
-		t.Errorf("--no-rules: ByRule = %d", res.ByRule)
-	}
-
-	// --no-category drops the bank's column only; your rules still run.
-	db = withRules()
-	res = mustImport(t, db, "signed.csv", importOptions{NoCategory: true})
-	if res.Categorized != 2 || res.ByRule != 2 {
-		t.Errorf("--no-category: categorized %d (%d by rule), want 2 (2)", res.Categorized, res.ByRule)
-	}
-
-	db = withRules()
-	res = mustImport(t, db, "signed.csv", importOptions{DryRun: true})
-	if res.ByRule != 2 || len(db.Transactions) != 0 {
-		t.Errorf("dry run: ByRule %d, %d transactions written", res.ByRule, len(db.Transactions))
-	}
-}
-
 // A file that has never had a rule must not grow rule keys just by being saved.
 func TestRulesStayOutOfOldFiles(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "b.json")
@@ -227,16 +184,32 @@ func TestRulesStayOutOfOldFiles(t *testing.T) {
 }
 
 func TestRuleSafety(t *testing.T) {
-	db := importDB()
+	db := ruleDB()
 	for _, short := range []string{"a", "co", " a b "} {
 		if _, err := AddRule(db, short, "Shopping"); err == nil {
 			t.Errorf("AddRule(%q) should be refused as too short", short)
 		}
 	}
-	appendTransaction(db, "2026-09-01", 1, 0, "AMAZON RETA* 1", -2899, "a")
-	appendTransaction(db, "2026-09-02", 1, 5, "Amazon Prime", -1499, "b")
-	appendTransaction(db, "2026-09-03", 1, 0, "Kum & Go", -3406, "c")
+	AppendTransaction(db, "2026-09-01", 1, 0, "AMAZON RETA* 1", -2899, "a")
+	AppendTransaction(db, "2026-09-02", 1, 5, "Amazon Prime", -1499, "b")
+	AppendTransaction(db, "2026-09-03", 1, 0, "Kum & Go", -3406, "c")
 	if all, unc := RuleReach(db, "amazon"); all != 2 || unc != 1 {
 		t.Errorf("RuleReach = %d, %d; want 2, 1", all, unc)
 	}
+}
+
+// ruleDB is one checking account and a spread of categories for rules to target.
+func ruleDB() *DB {
+	db := &DB{
+		Accounts:      []Account{{ID: 1, Name: "Veridian Checking", Type: "checking"}},
+		NextAccountID: 2, NextCategoryID: 1, NextTransactionID: 1,
+	}
+	for _, c := range []struct{ name, kind string }{
+		{"Paycheck", KindIncome}, {"Groceries", KindExpense}, {"Gas", KindExpense},
+		{"Eating-Out", KindExpense}, {"Shopping", KindExpense}, {"Utilities", KindExpense},
+	} {
+		db.Categories = append(db.Categories, Category{ID: db.NextCategoryID, Name: c.name, Kind: c.kind})
+		db.NextCategoryID++
+	}
+	return db
 }

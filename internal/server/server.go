@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"embed"
@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mason-munnik/budgit/internal/store"
 )
 
 // dbMu serializes the load -> mutate -> save sequence. Two overlapping writes
@@ -44,16 +46,16 @@ type accountView struct {
 }
 
 type dashboard struct {
-	Month           string        `json:"month"`
-	GeneratedAt     string        `json:"generated_at"`
-	Accounts        []accountView `json:"accounts"`
-	Categories      []Category    `json:"categories"`
-	Report          Report        `json:"report"`
-	Transactions    []txnView     `json:"transactions"`
-	Trend           []MonthTotal  `json:"trend"`
-	AvailableMonths []string      `json:"available_months"`
-	DataFile        string        `json:"data_file"`
-	Rules           []ruleView    `json:"rules"`
+	Month           string             `json:"month"`
+	GeneratedAt     string             `json:"generated_at"`
+	Accounts        []accountView      `json:"accounts"`
+	Categories      []store.Category   `json:"categories"`
+	Report          store.Report       `json:"report"`
+	Transactions    []txnView          `json:"transactions"`
+	Trend           []store.MonthTotal `json:"trend"`
+	AvailableMonths []string           `json:"available_months"`
+	DataFile        string             `json:"data_file"`
+	Rules           []ruleView         `json:"rules"`
 }
 
 type ruleView struct {
@@ -62,18 +64,15 @@ type ruleView struct {
 	Category string `json:"category"`
 }
 
-func cmdServe(args []string) error {
-	var path string
-	fs := newFS("serve", &path)
-	addr := fs.String("addr", "localhost:8080", "address to bind (keep it on loopback)")
-	fs.Parse(args)
-
+// Run serves the dashboard for the data file at path until the listener fails.
+// addr must be a loopback address.
+func Run(path, addr string) error {
 	// Fail loudly rather than silently serving unauthenticated finances to the LAN.
-	if err := checkLoopback(*addr); err != nil {
+	if err := checkLoopback(addr); err != nil {
 		return err
 	}
 	// Surface a broken/missing data file now instead of on the first request.
-	if _, err := Load(path); err != nil {
+	if _, err := store.Load(path); err != nil {
 		return err
 	}
 
@@ -84,7 +83,7 @@ func cmdServe(args []string) error {
 		dbMu.Lock()
 		defer dbMu.Unlock()
 
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
@@ -93,7 +92,7 @@ func cmdServe(args []string) error {
 		if month == "" {
 			month = latestMonth(db)
 		}
-		m, err := ValidateMonth(month)
+		m, err := store.ValidateMonth(month)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -103,82 +102,82 @@ func cmdServe(args []string) error {
 
 	// Every mutation the dashboard can perform. Each one answers with a freshly
 	// built dashboard so the page re-renders from a single round trip.
-	mux.HandleFunc("/api/txn/add", writeHandler(path, func(db *DB, req writeRequest) error {
-		_, err := AddTransaction(db, req.Date, req.Account, req.Category, req.Description, req.Amount)
+	mux.HandleFunc("/api/txn/add", writeHandler(path, func(db *store.DB, req writeRequest) error {
+		_, err := store.AddTransaction(db, req.Date, req.Account, req.Category, req.Description, req.Amount)
 		return err
 	}))
-	mux.HandleFunc("/api/txn/delete", writeHandler(path, func(db *DB, req writeRequest) error {
-		_, err := DeleteTransaction(db, req.ID)
+	mux.HandleFunc("/api/txn/delete", writeHandler(path, func(db *store.DB, req writeRequest) error {
+		_, err := store.DeleteTransaction(db, req.ID)
 		return err
 	}))
-	mux.HandleFunc("/api/txn/categorize", writeHandler(path, func(db *DB, req writeRequest) error {
+	mux.HandleFunc("/api/txn/categorize", writeHandler(path, func(db *store.DB, req writeRequest) error {
 		if req.None {
-			_, _, err := UncategorizeTransaction(db, req.ID)
+			_, _, err := store.UncategorizeTransaction(db, req.ID)
 			return err
 		}
-		if _, _, err := CategorizeTransaction(db, req.ID, req.Category); err != nil {
+		if _, _, err := store.CategorizeTransaction(db, req.ID, req.Category); err != nil {
 			return err
 		}
 		// match also adds a rule and applies it to other uncategorized rows.
 		if strings.TrimSpace(req.Match) != "" {
-			if _, err := AddRule(db, req.Match, req.Category); err != nil {
+			if _, err := store.AddRule(db, req.Match, req.Category); err != nil {
 				return err
 			}
-			ApplyRules(db)
+			store.ApplyRules(db)
 		}
 		return nil
 	}))
-	mux.HandleFunc("/api/txn/edit", writeHandler(path, func(db *DB, req writeRequest) error {
+	mux.HandleFunc("/api/txn/edit", writeHandler(path, func(db *store.DB, req writeRequest) error {
 		if req.Edit == nil {
 			return fmt.Errorf("nothing to change")
 		}
-		_, err := EditTransaction(db, req.ID, *req.Edit)
+		_, err := store.EditTransaction(db, req.ID, *req.Edit)
 		return err
 	}))
-	mux.HandleFunc("/api/account/add", writeHandler(path, func(db *DB, req writeRequest) error {
-		_, err := AddAccount(db, req.Name, req.Kind, req.Amount)
+	mux.HandleFunc("/api/account/add", writeHandler(path, func(db *store.DB, req writeRequest) error {
+		_, err := store.AddAccount(db, req.Name, req.Kind, req.Amount)
 		return err
 	}))
-	mux.HandleFunc("/api/account/rename", writeHandler(path, func(db *DB, req writeRequest) error {
-		_, _, err := RenameAccount(db, req.Account, req.Name)
+	mux.HandleFunc("/api/account/rename", writeHandler(path, func(db *store.DB, req writeRequest) error {
+		_, _, err := store.RenameAccount(db, req.Account, req.Name)
 		return err
 	}))
-	mux.HandleFunc("/api/account/delete", writeHandler(path, func(db *DB, req writeRequest) error {
-		_, err := DeleteAccount(db, req.Account)
+	mux.HandleFunc("/api/account/delete", writeHandler(path, func(db *store.DB, req writeRequest) error {
+		_, err := store.DeleteAccount(db, req.Account)
 		return err
 	}))
-	mux.HandleFunc("/api/category/rename", writeHandler(path, func(db *DB, req writeRequest) error {
-		_, _, err := RenameCategory(db, req.Category, req.Name)
+	mux.HandleFunc("/api/category/rename", writeHandler(path, func(db *store.DB, req writeRequest) error {
+		_, _, err := store.RenameCategory(db, req.Category, req.Name)
 		return err
 	}))
-	mux.HandleFunc("/api/category/delete", writeHandler(path, func(db *DB, req writeRequest) error {
-		_, _, err := DeleteCategory(db, req.Category)
+	mux.HandleFunc("/api/category/delete", writeHandler(path, func(db *store.DB, req writeRequest) error {
+		_, _, err := store.DeleteCategory(db, req.Category)
 		return err
 	}))
-	mux.HandleFunc("/api/rule/add", writeHandler(path, func(db *DB, req writeRequest) error {
-		if _, err := AddRule(db, req.Match, req.Category); err != nil {
+	mux.HandleFunc("/api/rule/add", writeHandler(path, func(db *store.DB, req writeRequest) error {
+		if _, err := store.AddRule(db, req.Match, req.Category); err != nil {
 			return err
 		}
 		// Applied at once: it only ever fills in uncategorized rows.
-		ApplyRules(db)
+		store.ApplyRules(db)
 		return nil
 	}))
-	mux.HandleFunc("/api/rule/delete", writeHandler(path, func(db *DB, req writeRequest) error {
-		_, err := DeleteRule(db, req.ID)
+	mux.HandleFunc("/api/rule/delete", writeHandler(path, func(db *store.DB, req writeRequest) error {
+		_, err := store.DeleteRule(db, req.ID)
 		return err
 	}))
-	mux.HandleFunc("/api/account/balance", writeHandler(path, func(db *DB, req writeRequest) error {
-		_, _, err := SetAccountBalance(db, req.Account, req.Amount)
+	mux.HandleFunc("/api/account/balance", writeHandler(path, func(db *store.DB, req writeRequest) error {
+		_, _, err := store.SetAccountBalance(db, req.Account, req.Amount)
 		return err
 	}))
-	mux.HandleFunc("/api/category/add", writeHandler(path, func(db *DB, req writeRequest) error {
-		_, err := AddCategory(db, req.Name, req.Kind)
+	mux.HandleFunc("/api/category/add", writeHandler(path, func(db *store.DB, req writeRequest) error {
+		_, err := store.AddCategory(db, req.Name, req.Kind)
 		return err
 	}))
-	mux.HandleFunc("/api/budget/set", writeHandler(path, func(db *DB, req writeRequest) error {
+	mux.HandleFunc("/api/budget/set", writeHandler(path, func(db *store.DB, req writeRequest) error {
 		// The budget lands on the month the page is showing, which is the same
 		// month the response is rebuilt for.
-		_, _, _, err := SetCategoryBudget(db, req.Category, req.Month, req.Amount)
+		_, _, _, err := store.SetCategoryBudget(db, req.Category, req.Month, req.Amount)
 		return err
 	}))
 
@@ -189,27 +188,27 @@ func cmdServe(args []string) error {
 	}
 	mux.Handle("/", http.FileServer(http.FS(content)))
 
-	ln, err := net.Listen("tcp", *addr)
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("cannot bind %s: %w", *addr, err)
+		return fmt.Errorf("cannot bind %s: %w", addr, err)
 	}
-	fmt.Printf("budgit dashboard: http://%s\n", *addr)
+	fmt.Printf("budgit dashboard: http://%s\n", addr)
 	fmt.Printf("data file: %s\n", path)
 	fmt.Println("press ctrl-c to stop")
 
 	srv := &http.Server{
-		Handler:           guard(*addr, mux),
+		Handler:           guard(addr, mux),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return srv.Serve(ln)
 }
 
-func buildDashboard(db *DB, month, path string) dashboard {
+func buildDashboard(db *store.DB, month, path string) dashboard {
 	d := dashboard{
 		Month:       month,
 		GeneratedAt: time.Now().Format(time.RFC3339),
-		Report:      BuildReport(db, month),
-		Trend:       Trend(db, PrevMonths(month, 6)),
+		Report:      store.BuildReport(db, month),
+		Trend:       store.Trend(db, store.PrevMonths(month, 6)),
 		DataFile:    path,
 	}
 
@@ -222,11 +221,11 @@ func buildDashboard(db *DB, month, path string) dashboard {
 
 	// The report only carries categories with a budget or activity; the entry
 	// form needs every category that exists.
-	d.Categories = append([]Category{}, db.Categories...)
+	d.Categories = append([]store.Category{}, db.Categories...)
 
 	db.SortTransactions()
 	for _, t := range db.Transactions {
-		if MonthOf(t.Date) != month {
+		if store.MonthOf(t.Date) != month {
 			continue
 		}
 		kind := ""
@@ -254,10 +253,10 @@ func buildDashboard(db *DB, month, path string) dashboard {
 
 // availableMonths lists every month with data, plus the one being viewed,
 // newest first — so the picker never omits the current selection.
-func availableMonths(db *DB, current string) []string {
+func availableMonths(db *store.DB, current string) []string {
 	seen := map[string]bool{current: true}
 	for _, t := range db.Transactions {
-		seen[MonthOf(t.Date)] = true
+		seen[store.MonthOf(t.Date)] = true
 	}
 	for _, b := range db.Budgets {
 		seen[b.Month] = true
@@ -272,10 +271,10 @@ func availableMonths(db *DB, current string) []string {
 
 // latestMonth defaults the dashboard to the newest month holding data,
 // falling back to the calendar month.
-func latestMonth(db *DB) string {
+func latestMonth(db *store.DB) string {
 	best := ""
 	for _, t := range db.Transactions {
-		if m := MonthOf(t.Date); m > best {
+		if m := store.MonthOf(t.Date); m > best {
 			best = m
 		}
 	}
@@ -285,7 +284,7 @@ func latestMonth(db *DB) string {
 		}
 	}
 	if best == "" {
-		return CurrentMonth()
+		return store.CurrentMonth()
 	}
 	return best
 }
@@ -295,23 +294,23 @@ func latestMonth(db *DB) string {
 // to ParseMoney, so "$1,299", "84.31" and "+24.99" mean the same thing here as
 // they do on the command line.
 type writeRequest struct {
-	Month       string   `json:"month"`
-	Date        string   `json:"date"`
-	Account     string   `json:"account"`
-	Category    string   `json:"category"`
-	Description string   `json:"description"`
-	Amount      string   `json:"amount"`
-	Name        string   `json:"name"`
-	Kind        string   `json:"kind"`
-	ID          int      `json:"id"`
-	Match       string   `json:"match"` // a rule's text; on categorize, also add that rule
-	None        bool     `json:"none"`  // categorize: back to uncategorized
-	Edit        *txnEdit `json:"edit"`
+	Month       string         `json:"month"`
+	Date        string         `json:"date"`
+	Account     string         `json:"account"`
+	Category    string         `json:"category"`
+	Description string         `json:"description"`
+	Amount      string         `json:"amount"`
+	Name        string         `json:"name"`
+	Kind        string         `json:"kind"`
+	ID          int            `json:"id"`
+	Match       string         `json:"match"` // a rule's text; on categorize, also add that rule
+	None        bool           `json:"none"`  // categorize: back to uncategorized
+	Edit        *store.TxnEdit `json:"edit"`
 }
 
 // writeHandler wraps one mutation with the checks every write shares: POST only,
 // same-origin only, then load -> apply -> save under the lock.
-func writeHandler(path string, apply func(*DB, writeRequest) error) http.HandlerFunc {
+func writeHandler(path string, apply func(*store.DB, writeRequest) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
@@ -334,7 +333,7 @@ func writeHandler(path string, apply func(*DB, writeRequest) error) http.Handler
 		dbMu.Lock()
 		defer dbMu.Unlock()
 
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
@@ -347,7 +346,7 @@ func writeHandler(path string, apply func(*DB, writeRequest) error) http.Handler
 		}
 		if err := db.Save(); err != nil {
 			code := http.StatusInternalServerError
-			if errors.Is(err, ErrChangedOnDisk) {
+			if errors.Is(err, store.ErrChangedOnDisk) {
 				code = http.StatusConflict
 			}
 			writeErr(w, code, err.Error())
@@ -358,7 +357,7 @@ func writeHandler(path string, apply func(*DB, writeRequest) error) http.Handler
 		if month == "" {
 			month = latestMonth(db)
 		}
-		m, err := ValidateMonth(month)
+		m, err := store.ValidateMonth(month)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
