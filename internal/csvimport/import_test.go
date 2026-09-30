@@ -1,36 +1,39 @@
-package main
+package csvimport
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/mason-munnik/budgit/internal/money"
+	"github.com/mason-munnik/budgit/internal/store"
 )
 
 // importDB is a single-account book with the categories the fixtures refer to.
-func importDB() *DB {
-	db := &DB{
-		Accounts:      []Account{{ID: 1, Name: "Veridian Checking", Type: "checking"}},
+func importDB() *store.DB {
+	db := &store.DB{
+		Accounts:      []store.Account{{ID: 1, Name: "Veridian Checking", Type: "checking"}},
 		NextAccountID: 2, NextCategoryID: 1, NextTransactionID: 1,
 	}
 	for _, c := range []struct{ name, kind string }{
-		{"Paycheck", KindIncome}, {"Groceries", KindExpense}, {"Gas", KindExpense},
-		{"Eating-Out", KindExpense}, {"Shopping", KindExpense}, {"Utilities", KindExpense},
+		{"Paycheck", store.KindIncome}, {"Groceries", store.KindExpense}, {"Gas", store.KindExpense},
+		{"Eating-Out", store.KindExpense}, {"Shopping", store.KindExpense}, {"Utilities", store.KindExpense},
 	} {
-		db.Categories = append(db.Categories, Category{ID: db.NextCategoryID, Name: c.name, Kind: c.kind})
+		db.Categories = append(db.Categories, store.Category{ID: db.NextCategoryID, Name: c.name, Kind: c.kind})
 		db.NextCategoryID++
 	}
 	return db
 }
 
-func runImport(t *testing.T, db *DB, file string, opts importOptions) (*importResult, error) {
+func runImport(t *testing.T, db *store.DB, file string, opts Options) (*Result, error) {
 	t.Helper()
 	if opts.Cols == nil {
 		opts.Cols = map[string]string{}
 	}
-	return ImportCSV(db, filepath.Join("testdata", file), 1, opts)
+	return Import(db, filepath.Join("testdata", file), 1, opts)
 }
 
-func mustImport(t *testing.T, db *DB, file string, opts importOptions) *importResult {
+func mustImport(t *testing.T, db *store.DB, file string, opts Options) *Result {
 	t.Helper()
 	res, err := runImport(t, db, file, opts)
 	if err != nil {
@@ -39,7 +42,7 @@ func mustImport(t *testing.T, db *DB, file string, opts importOptions) *importRe
 	return res
 }
 
-func txnByDesc(db *DB, desc string) *Transaction {
+func txnByDesc(db *store.DB, desc string) *store.Transaction {
 	for i := range db.Transactions {
 		if db.Transactions[i].Description == desc {
 			return &db.Transactions[i]
@@ -73,7 +76,7 @@ func TestNormalizeAmount(t *testing.T) {
 			t.Errorf("normalizeAmount(%q) errored: %v", c.in, err)
 			continue
 		}
-		got, _, err := ParseMoney(norm)
+		got, _, err := money.ParseMoney(norm)
 		if err != nil {
 			t.Errorf("normalizeAmount(%q) = %q, which ParseMoney rejects: %v", c.in, norm, err)
 			continue
@@ -134,7 +137,7 @@ func TestParseCSVDate(t *testing.T) {
 // must not be flipped by the category-direction inference.
 func TestImportKeepsPositiveAmountsPositive(t *testing.T) {
 	db := importDB()
-	mustImport(t, db, "signed.csv", importOptions{})
+	mustImport(t, db, "signed.csv", Options{})
 
 	pay := txnByDesc(db, "Salary from Acme Corp")
 	if pay == nil {
@@ -154,7 +157,7 @@ func TestImportKeepsPositiveAmountsPositive(t *testing.T) {
 
 func TestImportSkipsAreCountedNotSilent(t *testing.T) {
 	db := importDB()
-	res := mustImport(t, db, "signed.csv", importOptions{})
+	res := mustImport(t, db, "signed.csv", Options{})
 
 	if res.Rows != 8 {
 		t.Errorf("read %d rows, want 8", res.Rows)
@@ -183,7 +186,7 @@ func TestImportSkipsAreCountedNotSilent(t *testing.T) {
 // A blank primary date falls back to the secondary date column.
 func TestImportDateFallback(t *testing.T) {
 	db := importDB()
-	mustImport(t, db, "signed.csv", importOptions{})
+	mustImport(t, db, "signed.csv", Options{})
 	bg := txnByDesc(db, "Bread Garden")
 	if bg == nil {
 		t.Fatal("the row with a blank posting date was dropped")
@@ -195,7 +198,7 @@ func TestImportDateFallback(t *testing.T) {
 
 func TestImportCategoryResolution(t *testing.T) {
 	db := importDB()
-	mustImport(t, db, "signed.csv", importOptions{})
+	mustImport(t, db, "signed.csv", Options{})
 
 	cases := []struct{ desc, want string }{
 		{"Amazon", "Shopping"},                  // exact name match
@@ -218,7 +221,7 @@ func TestImportCategoryResolution(t *testing.T) {
 
 func TestImportCategoryMapAndDisable(t *testing.T) {
 	db := importDB()
-	mustImport(t, db, "signed.csv", importOptions{
+	mustImport(t, db, "signed.csv", Options{
 		Maps: []string{"Credit Card Payments=Utilities"}})
 	tx := txnByDesc(db, "Payment to Chase")
 	if got := db.CategoryName(tx.CategoryID); got != "Utilities" {
@@ -226,17 +229,17 @@ func TestImportCategoryMapAndDisable(t *testing.T) {
 	}
 
 	// A --map naming a category that does not exist is a typo, caught up front.
-	if _, err := runImport(t, importDB(), "signed.csv", importOptions{
+	if _, err := runImport(t, importDB(), "signed.csv", Options{
 		Maps: []string{"Shopping=Nonexistent"}}); err == nil {
 		t.Error("--map onto a missing category should error")
 	}
-	if _, err := runImport(t, importDB(), "signed.csv", importOptions{
+	if _, err := runImport(t, importDB(), "signed.csv", Options{
 		Maps: []string{"no equals sign"}}); err == nil {
 		t.Error("a malformed --map should error")
 	}
 
 	db = importDB()
-	res := mustImport(t, db, "signed.csv", importOptions{NoCategory: true})
+	res := mustImport(t, db, "signed.csv", Options{NoCategory: true})
 	if res.Categorized != 0 {
 		t.Errorf("--no-category still categorized %d rows", res.Categorized)
 	}
@@ -248,7 +251,7 @@ func TestImportNeverCreatesCategories(t *testing.T) {
 	db := importDB()
 	db.Categories = nil // no categories at all
 	before := len(db.Categories)
-	res := mustImport(t, db, "signed.csv", importOptions{})
+	res := mustImport(t, db, "signed.csv", Options{})
 	if len(db.Categories) != before {
 		t.Errorf("import created %d categories", len(db.Categories)-before)
 	}
@@ -259,8 +262,8 @@ func TestImportNeverCreatesCategories(t *testing.T) {
 
 func TestImportDedup(t *testing.T) {
 	db := importDB()
-	first := mustImport(t, db, "signed.csv", importOptions{})
-	second := mustImport(t, db, "signed.csv", importOptions{})
+	first := mustImport(t, db, "signed.csv", Options{})
+	second := mustImport(t, db, "signed.csv", Options{})
 
 	if second.Imported != 0 {
 		t.Errorf("re-import added %d rows, want 0", second.Imported)
@@ -277,7 +280,7 @@ func TestImportDedup(t *testing.T) {
 			t.Errorf("imported txn %d has no external id", tx.ID)
 		}
 	}
-	if hand, _ := AddTransaction(db, "2026-09-01", "Veridian Checking", "Gas", "typed by hand", "10"); hand.ExternalID != "" {
+	if hand, _ := store.AddTransaction(db, "2026-09-01", "Veridian Checking", "Gas", "typed by hand", "10"); hand.ExternalID != "" {
 		t.Error("a hand-entered transaction should have no external id")
 	}
 }
@@ -285,11 +288,11 @@ func TestImportDedup(t *testing.T) {
 // Bank ids are only unique per bank, so another account reusing them still imports.
 func TestImportDedupIsPerAccount(t *testing.T) {
 	db := importDB()
-	db.Accounts = append(db.Accounts, Account{ID: 2, Name: "Amex", Type: "credit"})
-	first := mustImport(t, db, "signed.csv", importOptions{})
+	db.Accounts = append(db.Accounts, store.Account{ID: 2, Name: "Amex", Type: "credit"})
+	first := mustImport(t, db, "signed.csv", Options{})
 
-	opts := importOptions{Cols: map[string]string{}}
-	res, err := ImportCSV(db, filepath.Join("testdata", "signed.csv"), 2, opts)
+	opts := Options{Cols: map[string]string{}}
+	res, err := Import(db, filepath.Join("testdata", "signed.csv"), 2, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +304,7 @@ func TestImportDedupIsPerAccount(t *testing.T) {
 
 func TestImportPairMode(t *testing.T) {
 	db := importDB()
-	res := mustImport(t, db, "pair.csv", importOptions{})
+	res := mustImport(t, db, "pair.csv", Options{})
 	if res.Dialect.Mode != modePair {
 		t.Fatalf("mode = %v, want pair", res.Dialect.Mode)
 	}
@@ -316,14 +319,14 @@ func TestImportPairMode(t *testing.T) {
 		t.Errorf("row with a blank credit = %v, want -5615", tx)
 	}
 	// --invert is meaningless when direction is already explicit.
-	if _, err := runImport(t, importDB(), "pair.csv", importOptions{Invert: true}); err == nil {
+	if _, err := runImport(t, importDB(), "pair.csv", Options{Invert: true}); err == nil {
 		t.Error("--invert on a debit/credit file should be rejected, not ignored")
 	}
 }
 
 func TestImportTypedMode(t *testing.T) {
 	db := importDB()
-	res := mustImport(t, db, "typed.csv", importOptions{})
+	res := mustImport(t, db, "typed.csv", Options{})
 	if res.Dialect.Mode != modeTyped {
 		t.Fatalf("mode = %v, want typed", res.Dialect.Mode)
 	}
@@ -346,7 +349,7 @@ func TestImportTypedMode(t *testing.T) {
 func TestImportInvertedCardExport(t *testing.T) {
 	// Left to itself it must refuse, and import nothing.
 	db := importDB()
-	_, err := runImport(t, db, "inverted.csv", importOptions{})
+	_, err := runImport(t, db, "inverted.csv", Options{})
 	if err == nil {
 		t.Fatal("an inverted card export should not import silently")
 	}
@@ -356,7 +359,7 @@ func TestImportInvertedCardExport(t *testing.T) {
 
 	// --invert makes purchases negative and the payment positive.
 	db = importDB()
-	mustImport(t, db, "inverted.csv", importOptions{Invert: true})
+	mustImport(t, db, "inverted.csv", Options{Invert: true})
 	if tx := txnByDesc(db, "Amazon"); tx == nil || tx.AmountCents != -3744 {
 		t.Errorf("inverted purchase = %v, want -3744", tx)
 	}
@@ -366,19 +369,19 @@ func TestImportInvertedCardExport(t *testing.T) {
 
 	// --no-invert takes the file at its word.
 	db = importDB()
-	mustImport(t, db, "inverted.csv", importOptions{NoInvert: true})
+	mustImport(t, db, "inverted.csv", Options{NoInvert: true})
 	if tx := txnByDesc(db, "Amazon"); tx == nil || tx.AmountCents != 3744 {
 		t.Errorf("--no-invert purchase = %v, want +3744", tx)
 	}
 
-	if _, err := runImport(t, importDB(), "inverted.csv", importOptions{Invert: true, NoInvert: true}); err == nil {
+	if _, err := runImport(t, importDB(), "inverted.csv", Options{Invert: true, NoInvert: true}); err == nil {
 		t.Error("--invert with --no-invert should be rejected")
 	}
 }
 
 func TestImportSemicolonDecimalComma(t *testing.T) {
 	db := importDB()
-	mustImport(t, db, "semicolon.csv", importOptions{})
+	mustImport(t, db, "semicolon.csv", Options{})
 	if tx := txnByDesc(db, "Amazon"); tx == nil || tx.AmountCents != -3744 {
 		t.Errorf("decimal-comma amount = %v, want -3744", tx)
 	}
@@ -393,7 +396,7 @@ func TestImportSemicolonDecimalComma(t *testing.T) {
 
 func TestImportPreambleAndBOM(t *testing.T) {
 	db := importDB()
-	res := mustImport(t, db, "preamble.csv", importOptions{})
+	res := mustImport(t, db, "preamble.csv", Options{})
 	if res.Imported != 2 {
 		t.Errorf("imported %d, want 2 (the preamble is not data)", res.Imported)
 	}
@@ -404,7 +407,7 @@ func TestImportPreambleAndBOM(t *testing.T) {
 
 func TestImportDryRunWritesNothing(t *testing.T) {
 	db := importDB()
-	res := mustImport(t, db, "signed.csv", importOptions{DryRun: true})
+	res := mustImport(t, db, "signed.csv", Options{DryRun: true})
 	if res.Imported == 0 {
 		t.Fatal("dry run reported nothing importable")
 	}
@@ -430,7 +433,7 @@ not-a-date,Broken,-20.00
 09/20/2026,AlsoFine,-30.00
 `)
 	db := importDB()
-	if _, err := ImportCSV(db, path, 1, importOptions{Cols: map[string]string{}}); err == nil {
+	if _, err := Import(db, path, 1, Options{Cols: map[string]string{}}); err == nil {
 		t.Fatal("an unreadable date should abort the import")
 	}
 	if len(db.Transactions) != 0 {
@@ -448,7 +451,7 @@ X-1,09/22/2026,Amazon,-37.44
 X-2,09/21/2026,Target,-10.00
 `)
 	db := importDB()
-	res, err := ImportCSV(db, path, 1, importOptions{Cols: map[string]string{}})
+	res, err := Import(db, path, 1, Options{Cols: map[string]string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,7 +470,7 @@ R-1,09/07/2026,McDonalds,-12.84
 R-2,09/07/2026,McDonalds,-12.84
 `)
 	db := importDB()
-	res, err := ImportCSV(db, path, 1, importOptions{Cols: map[string]string{}})
+	res, err := Import(db, path, 1, Options{Cols: map[string]string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -487,13 +490,13 @@ func writeFile(t *testing.T, path, body string) {
 // statement arrives. This is the case external-id dedup cannot see on its own.
 func TestImportAdoptsHandEnteredRow(t *testing.T) {
 	db := importDB()
-	hand, err := AddTransaction(db, "2026-09-05", "Veridian Checking", "Shopping", "Amazon", "37.44")
+	hand, err := store.AddTransaction(db, "2026-09-05", "Veridian Checking", "Shopping", "Amazon", "37.44")
 	if err != nil {
 		t.Fatal(err)
 	}
 	handID := hand.ID
 
-	res := mustImport(t, db, "sample-statement.csv", importOptions{})
+	res := mustImport(t, db, "sample-statement.csv", Options{})
 	if res.Matched != 1 {
 		t.Errorf("matched %d, want 1", res.Matched)
 	}
@@ -521,7 +524,7 @@ func TestImportAdoptsHandEnteredRow(t *testing.T) {
 	}
 
 	// And the match sticks: re-importing recognises it outright.
-	second := mustImport(t, db, "sample-statement.csv", importOptions{})
+	second := mustImport(t, db, "sample-statement.csv", Options{})
 	if second.Imported != 0 || second.Matched != 0 {
 		t.Errorf("re-import: imported %d matched %d, want 0 and 0", second.Imported, second.Matched)
 	}
@@ -541,11 +544,11 @@ M-2,09/07/2026,McDonalds,-12.84
 	// Two typed, two on the statement: two transactions, both claimed.
 	db := importDB()
 	for i := 0; i < 2; i++ {
-		if _, err := AddTransaction(db, "2026-09-07", "Veridian Checking", "Eating-Out", "McDonalds", "12.84"); err != nil {
+		if _, err := store.AddTransaction(db, "2026-09-07", "Veridian Checking", "Eating-Out", "McDonalds", "12.84"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	res, err := ImportCSV(db, path, 1, importOptions{Cols: map[string]string{}})
+	res, err := Import(db, path, 1, Options{Cols: map[string]string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -558,10 +561,10 @@ M-2,09/07/2026,McDonalds,-12.84
 
 	// One typed, two on the statement: one claimed, one genuinely new.
 	db = importDB()
-	if _, err := AddTransaction(db, "2026-09-07", "Veridian Checking", "Eating-Out", "McDonalds", "12.84"); err != nil {
+	if _, err := store.AddTransaction(db, "2026-09-07", "Veridian Checking", "Eating-Out", "McDonalds", "12.84"); err != nil {
 		t.Fatal(err)
 	}
-	res, err = ImportCSV(db, path, 1, importOptions{Cols: map[string]string{}})
+	res, err = Import(db, path, 1, Options{Cols: map[string]string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,12 +579,12 @@ M-2,09/07/2026,McDonalds,-12.84
 // A row on a different account is a different purchase, however alike it looks.
 func TestImportAdoptionIsPerAccount(t *testing.T) {
 	db := importDB()
-	db.Accounts = append(db.Accounts, Account{ID: 2, Name: "Discover Card", Type: "credit"})
+	db.Accounts = append(db.Accounts, store.Account{ID: 2, Name: "Discover Card", Type: "credit"})
 	db.NextAccountID = 3
-	if _, err := AddTransaction(db, "2026-09-05", "Discover Card", "Shopping", "Amazon", "37.44"); err != nil {
+	if _, err := store.AddTransaction(db, "2026-09-05", "Discover Card", "Shopping", "Amazon", "37.44"); err != nil {
 		t.Fatal(err)
 	}
-	res := mustImport(t, db, "sample-statement.csv", importOptions{}) // imports into account 1
+	res := mustImport(t, db, "sample-statement.csv", Options{}) // imports into account 1
 	if res.Matched != 0 {
 		t.Errorf("matched %d across accounts, want 0", res.Matched)
 	}
@@ -591,7 +594,7 @@ func TestImportAdoptionIsPerAccount(t *testing.T) {
 // re-claimed by a different statement row.
 func TestImportNeverClaimsAnImportedRow(t *testing.T) {
 	db := importDB()
-	mustImport(t, db, "sample-statement.csv", importOptions{})
+	mustImport(t, db, "sample-statement.csv", Options{})
 	before := len(db.Transactions)
 
 	dir := t.TempDir()
@@ -600,7 +603,7 @@ func TestImportNeverClaimsAnImportedRow(t *testing.T) {
 	writeFile(t, path, `Transaction ID,Date,Description,Amount
 OTHER-1,09/05/2026,Amazon again,-37.44
 `)
-	res, err := ImportCSV(db, path, 1, importOptions{Cols: map[string]string{}})
+	res, err := Import(db, path, 1, Options{Cols: map[string]string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -614,11 +617,11 @@ OTHER-1,09/05/2026,Amazon again,-37.44
 
 func TestImportDryRunDoesNotAdopt(t *testing.T) {
 	db := importDB()
-	hand, err := AddTransaction(db, "2026-09-05", "Veridian Checking", "Shopping", "Amazon", "37.44")
+	hand, err := store.AddTransaction(db, "2026-09-05", "Veridian Checking", "Shopping", "Amazon", "37.44")
 	if err != nil {
 		t.Fatal(err)
 	}
-	res := mustImport(t, db, "sample-statement.csv", importOptions{DryRun: true})
+	res := mustImport(t, db, "sample-statement.csv", Options{DryRun: true})
 	if res.Matched != 1 {
 		t.Errorf("dry run should still report the match, got %d", res.Matched)
 	}
@@ -667,11 +670,11 @@ func TestImportOverlappingFilesWithIDs(t *testing.T) {
 	pa, pb := writeOverlap(t, dir, true)
 	db := importDB()
 
-	first, err := ImportCSV(db, pa, 1, importOptions{Cols: map[string]string{}})
+	first, err := Import(db, pa, 1, Options{Cols: map[string]string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := ImportCSV(db, pb, 1, importOptions{Cols: map[string]string{}})
+	second, err := Import(db, pb, 1, Options{Cols: map[string]string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -696,10 +699,10 @@ func TestImportOverlappingFilesWithoutIDs(t *testing.T) {
 	pa, pb := writeOverlap(t, dir, false)
 	db := importDB()
 
-	if _, err := ImportCSV(db, pa, 1, importOptions{Cols: map[string]string{}}); err != nil {
+	if _, err := Import(db, pa, 1, Options{Cols: map[string]string{}}); err != nil {
 		t.Fatal(err)
 	}
-	second, err := ImportCSV(db, pb, 1, importOptions{Cols: map[string]string{}})
+	second, err := Import(db, pb, 1, Options{Cols: map[string]string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -727,10 +730,10 @@ B-991,09/05/2026,Amazon,-37.44
 B-992,09/07/2026,Target,-63.18
 `)
 	db := importDB()
-	if _, err := ImportCSV(db, filepath.Join(dir, "a.csv"), 1, importOptions{Cols: map[string]string{}}); err != nil {
+	if _, err := Import(db, filepath.Join(dir, "a.csv"), 1, Options{Cols: map[string]string{}}); err != nil {
 		t.Fatal(err)
 	}
-	res, err := ImportCSV(db, filepath.Join(dir, "b.csv"), 1, importOptions{Cols: map[string]string{}})
+	res, err := Import(db, filepath.Join(dir, "b.csv"), 1, Options{Cols: map[string]string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -760,14 +763,64 @@ B-2,09/07/2026,McDonalds,-12.84
 B-3,09/07/2026,McDonalds,-12.84
 `)
 	db := importDB()
-	if _, err := ImportCSV(db, filepath.Join(dir, "a.csv"), 1, importOptions{Cols: map[string]string{}}); err != nil {
+	if _, err := Import(db, filepath.Join(dir, "a.csv"), 1, Options{Cols: map[string]string{}}); err != nil {
 		t.Fatal(err)
 	}
-	res, err := ImportCSV(db, filepath.Join(dir, "b.csv"), 1, importOptions{Cols: map[string]string{}})
+	res, err := Import(db, filepath.Join(dir, "b.csv"), 1, Options{Cols: map[string]string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(res.Suspects) != 1 {
 		t.Errorf("%d warnings for one existing row, want 1", len(res.Suspects))
+	}
+}
+
+func TestImportRules(t *testing.T) {
+	// The rule overrides the bank's Shopping label and places what the label could not.
+	withRules := func() *store.DB {
+		db := importDB()
+		mustRule(t, db, "amazon", "Utilities")
+		mustRule(t, db, "payment to chase", "Utilities")
+		return db
+	}
+
+	db := withRules()
+	res := mustImport(t, db, "signed.csv", Options{})
+	for _, d := range []string{"Amazon", "Payment to Chase"} {
+		if got := db.CategoryName(txnByDesc(db, d).CategoryID); got != "Utilities" {
+			t.Errorf("%s -> %s, want Utilities (rule)", d, got)
+		}
+	}
+	if res.ByRule != 2 {
+		t.Errorf("ByRule = %d, want 2", res.ByRule)
+	}
+
+	db = withRules()
+	res = mustImport(t, db, "signed.csv", Options{NoRules: true})
+	if got := db.CategoryName(txnByDesc(db, "Amazon").CategoryID); got != "Shopping" {
+		t.Errorf("--no-rules: Amazon -> %s, want the bank's Shopping", got)
+	}
+	if res.ByRule != 0 {
+		t.Errorf("--no-rules: ByRule = %d", res.ByRule)
+	}
+
+	// --no-category drops the bank's column only; your rules still run.
+	db = withRules()
+	res = mustImport(t, db, "signed.csv", Options{NoCategory: true})
+	if res.Categorized != 2 || res.ByRule != 2 {
+		t.Errorf("--no-category: categorized %d (%d by rule), want 2 (2)", res.Categorized, res.ByRule)
+	}
+
+	db = withRules()
+	res = mustImport(t, db, "signed.csv", Options{DryRun: true})
+	if res.ByRule != 2 || len(db.Transactions) != 0 {
+		t.Errorf("dry run: ByRule %d, %d transactions written", res.ByRule, len(db.Transactions))
+	}
+}
+
+func mustRule(t *testing.T, db *store.DB, match, cat string) {
+	t.Helper()
+	if _, err := store.AddRule(db, match, cat); err != nil {
+		t.Fatalf("AddRule(%q, %q): %v", match, cat, err)
 	}
 }

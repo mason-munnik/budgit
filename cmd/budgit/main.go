@@ -8,6 +8,11 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+
+	"github.com/mason-munnik/budgit/internal/csvimport"
+	"github.com/mason-munnik/budgit/internal/money"
+	"github.com/mason-munnik/budgit/internal/server"
+	"github.com/mason-munnik/budgit/internal/store"
 )
 
 const usage = `budgit — a local-only personal budgeting tool
@@ -104,7 +109,7 @@ func main() {
 // newFS builds a subcommand flag set that always understands --file.
 func newFS(name string, path *string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
-	fs.StringVar(path, "file", DefaultPath(), "path to the budgit data file")
+	fs.StringVar(path, "file", store.DefaultPath(), "path to the budgit data file")
 	return fs
 }
 
@@ -146,24 +151,24 @@ func cmdAccount(args []string) error {
 		if strings.TrimSpace(*name) == "" {
 			return fmt.Errorf("account add requires --name")
 		}
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
-		a, err := AddAccount(db, *name, *typ, *balance)
+		a, err := store.AddAccount(db, *name, *typ, *balance)
 		if err != nil {
 			return err
 		}
 		if err := db.Save(); err != nil {
 			return err
 		}
-		fmt.Printf("Added account %d: %s (%s), opening balance %s\n", a.ID, a.Name, a.Type, FormatMoney(a.OpeningBalanceCents))
+		fmt.Printf("Added account %d: %s (%s), opening balance %s\n", a.ID, a.Name, a.Type, money.FormatMoney(a.OpeningBalanceCents))
 		return nil
 
 	case "list", "ls", "":
 		fs := newFS("account list", &path)
 		fs.Parse(rest)
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
@@ -178,10 +183,10 @@ func cmdAccount(args []string) error {
 			b := db.AccountBalance(a.ID)
 			total += b
 			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n", a.ID, a.Name, a.Type,
-				FormatMoney(a.OpeningBalanceCents), FormatMoney(b))
+				money.FormatMoney(a.OpeningBalanceCents), money.FormatMoney(b))
 		}
 		fmt.Fprintf(w, "\t\t\t\t\n")
-		fmt.Fprintf(w, "\tNET WORTH\t\t\t%s\n", FormatMoney(total))
+		fmt.Fprintf(w, "\tNET WORTH\t\t\t%s\n", money.FormatMoney(total))
 		return w.Flush()
 	case "set-balance", "balance":
 		fs := newFS("account set-balance", &path)
@@ -191,11 +196,11 @@ func cmdAccount(args []string) error {
 		if strings.TrimSpace(*acct) == "" || strings.TrimSpace(*amount) == "" {
 			return fmt.Errorf("account set-balance requires --account and --amount")
 		}
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
-		a, fromTxns, err := SetAccountBalance(db, *acct, *amount)
+		a, fromTxns, err := store.SetAccountBalance(db, *acct, *amount)
 		if err != nil {
 			return err
 		}
@@ -203,8 +208,8 @@ func cmdAccount(args []string) error {
 			return err
 		}
 		fmt.Printf("%s balance set to %s (opening %s + %s in transactions)\n",
-			a.Name, FormatMoney(db.AccountBalance(a.ID)),
-			FormatMoney(a.OpeningBalanceCents), FormatMoney(fromTxns))
+			a.Name, money.FormatMoney(db.AccountBalance(a.ID)),
+			money.FormatMoney(a.OpeningBalanceCents), money.FormatMoney(fromTxns))
 		return nil
 
 	case "rename":
@@ -215,11 +220,11 @@ func cmdAccount(args []string) error {
 		if len(pos) != 1 || strings.TrimSpace(*name) == "" {
 			return fmt.Errorf("usage: budgit account rename <account> --name NEW")
 		}
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
-		a, was, err := RenameAccount(db, pos[0], *name)
+		a, was, err := store.RenameAccount(db, pos[0], *name)
 		if err != nil {
 			return err
 		}
@@ -236,11 +241,11 @@ func cmdAccount(args []string) error {
 		if len(pos) != 1 {
 			return fmt.Errorf("usage: budgit account delete <account>")
 		}
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
-		gone, err := DeleteAccount(db, pos[0])
+		gone, err := store.DeleteAccount(db, pos[0])
 		if err != nil {
 			return err
 		}
@@ -262,21 +267,21 @@ func cmdCategory(args []string) error {
 	case "add":
 		fs := newFS("category add", &path)
 		name := fs.String("name", "", "category name (required)")
-		kind := fs.String("kind", KindExpense, "income or expense")
+		kind := fs.String("kind", store.KindExpense, "income or expense")
 		fs.Parse(rest)
 		if strings.TrimSpace(*name) == "" {
 			return fmt.Errorf("category add requires --name")
 		}
 		// Checked here rather than in AddCategory so the message names the flag.
 		k := strings.ToLower(strings.TrimSpace(*kind))
-		if k != KindIncome && k != KindExpense {
-			return fmt.Errorf("--kind must be %q or %q, got %q", KindIncome, KindExpense, *kind)
+		if k != store.KindIncome && k != store.KindExpense {
+			return fmt.Errorf("--kind must be %q or %q, got %q", store.KindIncome, store.KindExpense, *kind)
 		}
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
-		c, err := AddCategory(db, *name, k)
+		c, err := store.AddCategory(db, *name, k)
 		if err != nil {
 			return err
 		}
@@ -289,7 +294,7 @@ func cmdCategory(args []string) error {
 	case "list", "ls", "":
 		fs := newFS("category list", &path)
 		fs.Parse(rest)
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
@@ -312,11 +317,11 @@ func cmdCategory(args []string) error {
 		if len(pos) != 1 || strings.TrimSpace(*name) == "" {
 			return fmt.Errorf("usage: budgit category rename <category> --name NEW")
 		}
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
-		c, was, err := RenameCategory(db, pos[0], *name)
+		c, was, err := store.RenameCategory(db, pos[0], *name)
 		if err != nil {
 			return err
 		}
@@ -333,11 +338,11 @@ func cmdCategory(args []string) error {
 		if len(pos) != 1 {
 			return fmt.Errorf("usage: budgit category delete <category>")
 		}
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
-		gone, n, err := DeleteCategory(db, pos[0])
+		gone, n, err := store.DeleteCategory(db, pos[0])
 		if err != nil {
 			return err
 		}
@@ -367,7 +372,7 @@ func cmdTxn(args []string) error {
 	switch action {
 	case "add":
 		fs := newFS("txn add", &path)
-		date := fs.String("date", Today(), "transaction date, YYYY-MM-DD")
+		date := fs.String("date", store.Today(), "transaction date, YYYY-MM-DD")
 		acct := fs.String("account", "", "account name or ID (required)")
 		cat := fs.String("category", "", "category name or ID (optional; blank leaves it uncategorized)")
 		desc := fs.String("desc", "", "description")
@@ -377,7 +382,7 @@ func cmdTxn(args []string) error {
 		if strings.TrimSpace(*amount) == "" {
 			return fmt.Errorf("txn add requires --amount")
 		}
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
@@ -385,7 +390,7 @@ func cmdTxn(args []string) error {
 		if strings.TrimSpace(*acct) == "" && len(db.Accounts) != 1 {
 			return fmt.Errorf("txn add requires --account")
 		}
-		t, err := AddTransaction(db, *date, *acct, *cat, *desc, *amount)
+		t, err := store.AddTransaction(db, *date, *acct, *cat, *desc, *amount)
 		if err != nil {
 			return err
 		}
@@ -393,7 +398,7 @@ func cmdTxn(args []string) error {
 			return err
 		}
 		fmt.Printf("Added txn %d: %s  %s  %s  %s  [%s]\n",
-			t.ID, t.Date, FormatMoney(t.AmountCents), db.AccountName(t.AccountID),
+			t.ID, t.Date, money.FormatMoney(t.AmountCents), db.AccountName(t.AccountID),
 			t.Description, db.CategoryName(t.CategoryID))
 		return nil
 
@@ -406,7 +411,7 @@ func cmdTxn(args []string) error {
 		limit := fs.Int("limit", 50, "max rows to print (0 = all)")
 		fs.Parse(rest)
 
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
@@ -426,16 +431,16 @@ func cmdTxn(args []string) error {
 			wantCat = c.ID
 		}
 		if *month != "" {
-			if *month, err = ValidateMonth(*month); err != nil {
+			if *month, err = store.ValidateMonth(*month); err != nil {
 				return err
 			}
 		}
 
 		db.SortTransactions()
-		var rows []Transaction
+		var rows []store.Transaction
 		var total int64
 		for _, t := range db.Transactions {
-			if *month != "" && MonthOf(t.Date) != *month {
+			if *month != "" && store.MonthOf(t.Date) != *month {
 				continue
 			}
 			if wantAcct != 0 && t.AccountID != wantAcct {
@@ -463,16 +468,16 @@ func cmdTxn(args []string) error {
 		for _, t := range shown {
 			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\n",
 				t.ID, t.Date, db.AccountName(t.AccountID), db.CategoryName(t.CategoryID),
-				truncate(t.Description, 32), FormatMoney(t.AmountCents))
+				truncate(t.Description, 32), money.FormatMoney(t.AmountCents))
 		}
 		if err := w.Flush(); err != nil {
 			return err
 		}
 		if len(shown) < len(rows) {
 			fmt.Printf("\n%d of %d shown (--limit 0 for all). Net of all %d: %s\n",
-				len(shown), len(rows), len(rows), FormatMoney(total))
+				len(shown), len(rows), len(rows), money.FormatMoney(total))
 		} else {
-			fmt.Printf("\n%d transactions, net %s\n", len(rows), FormatMoney(total))
+			fmt.Printf("\n%d transactions, net %s\n", len(rows), money.FormatMoney(total))
 		}
 		return nil
 
@@ -488,11 +493,11 @@ func cmdTxn(args []string) error {
 		if err != nil {
 			return fmt.Errorf("transaction id %q is not a number", pos[0])
 		}
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
-		gone, err := DeleteTransaction(db, id)
+		gone, err := store.DeleteTransaction(db, id)
 		if err != nil {
 			return err
 		}
@@ -500,14 +505,14 @@ func cmdTxn(args []string) error {
 			return err
 		}
 		fmt.Printf("Deleted txn %d: %s  %s  %s  %s  [%s]\n",
-			gone.ID, gone.Date, FormatMoney(gone.AmountCents), db.AccountName(gone.AccountID),
+			gone.ID, gone.Date, money.FormatMoney(gone.AmountCents), db.AccountName(gone.AccountID),
 			gone.Description, db.CategoryName(gone.CategoryID))
 		return nil
 
 	case "import":
 		pos, flags := splitPositional(rest)
 		fs := newFS("txn import", &path)
-		var opts importOptions
+		var opts csvimport.Options
 		opts.Cols = map[string]string{}
 		acct := fs.String("account", "", "account the file belongs to (required unless you have exactly one)")
 		fs.BoolVar(&opts.DryRun, "dry-run", false, "show what would be imported, save nothing")
@@ -534,7 +539,7 @@ func cmdTxn(args []string) error {
 		if len(pos) != 1 {
 			return fmt.Errorf("usage: budgit txn import <file.csv> --account REF")
 		}
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
@@ -548,7 +553,7 @@ func cmdTxn(args []string) error {
 		if err != nil {
 			return err
 		}
-		res, err := ImportCSV(db, pos[0], a.ID, opts)
+		res, err := csvimport.Import(db, pos[0], a.ID, opts)
 		if err != nil {
 			return err
 		}
@@ -573,16 +578,16 @@ func cmdTxn(args []string) error {
 		if err != nil {
 			return fmt.Errorf("transaction id %q is not a number", pos[0])
 		}
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
-		var t *Transaction
+		var t *store.Transaction
 		var was string
 		if *none {
-			t, was, err = UncategorizeTransaction(db, id)
+			t, was, err = store.UncategorizeTransaction(db, id)
 		} else {
-			t, was, err = CategorizeTransaction(db, id, strings.Join(pos[1:], " "))
+			t, was, err = store.CategorizeTransaction(db, id, strings.Join(pos[1:], " "))
 		}
 		if err != nil {
 			return err
@@ -591,13 +596,13 @@ func cmdTxn(args []string) error {
 			return err
 		}
 		fmt.Printf("Txn %d: %s -> %s  (%s %s)\n",
-			t.ID, was, db.CategoryName(t.CategoryID), t.Date, FormatMoney(t.AmountCents))
+			t.ID, was, db.CategoryName(t.CategoryID), t.Date, money.FormatMoney(t.AmountCents))
 		return nil
 
 	case "edit":
 		pos, flags := splitPositional(rest)
 		fs := newFS("txn edit", &path)
-		var e txnEdit
+		var e store.TxnEdit
 		fs.Func("date", "new date, YYYY-MM-DD", func(v string) error { e.Date = &v; return nil })
 		fs.Func("account", "move it to another account", func(v string) error { e.Account = &v; return nil })
 		fs.Func("desc", "new description", func(v string) error { e.Description = &v; return nil })
@@ -606,18 +611,18 @@ func cmdTxn(args []string) error {
 		if len(pos) != 1 {
 			return fmt.Errorf("usage: budgit txn edit <txn-id> [--date] [--account] [--desc] [--amount]")
 		}
-		if e == (txnEdit{}) {
+		if e == (store.TxnEdit{}) {
 			return fmt.Errorf("nothing to change: give --date, --account, --desc or --amount")
 		}
 		id, err := strconv.Atoi(pos[0])
 		if err != nil {
 			return fmt.Errorf("transaction id %q is not a number", pos[0])
 		}
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
-		t, err := EditTransaction(db, id, e)
+		t, err := store.EditTransaction(db, id, e)
 		if err != nil {
 			return err
 		}
@@ -625,7 +630,7 @@ func cmdTxn(args []string) error {
 			return err
 		}
 		fmt.Printf("Edited txn %d: %s  %s  %s  %s  [%s]\n",
-			t.ID, t.Date, FormatMoney(t.AmountCents), db.AccountName(t.AccountID),
+			t.ID, t.Date, money.FormatMoney(t.AmountCents), db.AccountName(t.AccountID),
 			t.Description, db.CategoryName(t.CategoryID))
 		return nil
 	}
@@ -650,14 +655,14 @@ func (c colFlag) Set(v string) error { c.into[c.field] = v; return nil }
 // printImport reports what the file turned out to be and what came of it.
 // Every skipped row is accounted for: a silent drop is how an import quietly
 // loses a paycheck.
-func printImport(db *DB, a *Account, res *importResult, dry bool) {
+func printImport(db *store.DB, a *store.Account, res *csvimport.Result, dry bool) {
 	fmt.Println(res.Dialect.Summary())
 	fmt.Printf("\nRead %d rows from %s\n\n", res.Rows, filepath.Base(res.Path))
 
 	if dry {
 		for _, p := range res.Preview {
 			fmt.Printf("  %s  %-34s %12s  %s\n",
-				p.Date, truncate(p.Desc, 34), FormatMoney(p.Cents), p.Category)
+				p.Date, truncate(p.Desc, 34), money.FormatMoney(p.Cents), p.Category)
 		}
 		if n := res.Imported - len(res.Preview); n > 0 {
 			fmt.Printf("  ... and %d more\n", n)
@@ -704,17 +709,17 @@ func printImport(db *DB, a *Account, res *importResult, dry bool) {
 			plural(len(res.Suspects), "This row", "These rows"))
 		for _, s := range res.Suspects {
 			fmt.Printf("  %s  %-30s %10s   matches txn %d\n",
-				s.Date, truncate(s.Desc, 30), FormatMoney(s.Cents), s.ExistingID)
+				s.Date, truncate(s.Desc, 30), money.FormatMoney(s.Cents), s.ExistingID)
 		}
 		fmt.Println("Both were kept. Remove one with: budgit txn delete <id>")
 	}
 
 	if !dry && res.Imported > 0 {
-		fmt.Printf("\n%s balance is now %s\n", a.Name, FormatMoney(db.AccountBalance(a.ID)))
+		fmt.Printf("\n%s balance is now %s\n", a.Name, money.FormatMoney(db.AccountBalance(a.ID)))
 	}
 }
 
-func skipDetail(res *importResult) string {
+func skipDetail(res *csvimport.Result) string {
 	var parts []string
 	if res.Pending > 0 {
 		parts = append(parts, fmt.Sprintf("%d pending", res.Pending))
@@ -742,11 +747,11 @@ func cmdRule(args []string) error {
 		if strings.TrimSpace(*match) == "" || strings.TrimSpace(*cat) == "" {
 			return fmt.Errorf("rule add requires --match and --category")
 		}
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
-		r, err := AddRule(db, *match, *cat)
+		r, err := store.AddRule(db, *match, *cat)
 		if err != nil {
 			return err
 		}
@@ -754,10 +759,10 @@ func cmdRule(args []string) error {
 			return err
 		}
 		fmt.Printf("Added rule %d: %q -> %s\n", r.ID, r.Match, db.CategoryName(r.CategoryID))
-		if all, _ := RuleReach(db, r.Match); all > 0 {
+		if all, _ := store.RuleReach(db, r.Match); all > 0 {
 			fmt.Printf("It matches %d existing %s.\n", all, plural(all, "transaction", "transactions"))
 		}
-		if n := len(RuleHits(db)); n > 0 {
+		if n := len(store.RuleHits(db)); n > 0 {
 			fmt.Printf("%d uncategorized %s match your rules. Run: budgit rule apply\n",
 				n, plural(n, "transaction", "transactions"))
 		}
@@ -766,7 +771,7 @@ func cmdRule(args []string) error {
 	case "list", "ls", "":
 		fs := newFS("rule list", &path)
 		fs.Parse(rest)
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
@@ -792,11 +797,11 @@ func cmdRule(args []string) error {
 		if err != nil {
 			return fmt.Errorf("rule id %q is not a number", pos[0])
 		}
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
-		gone, err := DeleteRule(db, id)
+		gone, err := store.DeleteRule(db, id)
 		if err != nil {
 			return err
 		}
@@ -810,15 +815,15 @@ func cmdRule(args []string) error {
 		fs := newFS("rule apply", &path)
 		dry := fs.Bool("dry-run", false, "show what would be categorized, save nothing")
 		fs.Parse(rest)
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
-		var hits []ruleHit
+		var hits []store.RuleHit
 		if *dry {
-			hits = RuleHits(db)
+			hits = store.RuleHits(db)
 		} else {
-			hits = ApplyRules(db)
+			hits = store.ApplyRules(db)
 		}
 		if len(hits) == 0 {
 			fmt.Println("No uncategorized transactions match your rules.")
@@ -827,7 +832,7 @@ func cmdRule(args []string) error {
 		for _, h := range hits {
 			t := db.FindTransaction(h.TxnID)
 			fmt.Printf("  %s  %-34s %12s  -> %s\n",
-				t.Date, truncate(t.Description, 34), FormatMoney(t.AmountCents), db.CategoryName(h.CategoryID))
+				t.Date, truncate(t.Description, 34), money.FormatMoney(t.AmountCents), db.CategoryName(h.CategoryID))
 		}
 		if *dry {
 			fmt.Printf("\nWould categorize %d %s. Nothing saved.\n", len(hits), plural(len(hits), "transaction", "transactions"))
@@ -851,17 +856,17 @@ func cmdBudget(args []string) error {
 	case "set":
 		fs := newFS("budget set", &path)
 		cat := fs.String("category", "", "category name or ID (required)")
-		month := fs.String("month", CurrentMonth(), "month, YYYY-MM")
+		month := fs.String("month", store.CurrentMonth(), "month, YYYY-MM")
 		amount := fs.String("amount", "", "monthly allowance, e.g. 600 (required)")
 		fs.Parse(rest)
 		if strings.TrimSpace(*cat) == "" || strings.TrimSpace(*amount) == "" {
 			return fmt.Errorf("budget set requires --category and --amount")
 		}
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
-		c, m, cents, err := SetCategoryBudget(db, *cat, *month, *amount)
+		c, m, cents, err := store.SetCategoryBudget(db, *cat, *month, *amount)
 		if err != nil {
 			return err
 		}
@@ -871,19 +876,19 @@ func cmdBudget(args []string) error {
 		if cents == 0 {
 			fmt.Printf("Budget stopped: %s has no budget from %s on\n", c.Name, m)
 		} else {
-			fmt.Printf("Budget set: %s %s = %s, carried forward until you change it\n", c.Name, m, FormatMoney(cents))
+			fmt.Printf("Budget set: %s %s = %s, carried forward until you change it\n", c.Name, m, money.FormatMoney(cents))
 		}
 		return nil
 
 	case "list", "ls", "":
 		fs := newFS("budget list", &path)
-		month := fs.String("month", CurrentMonth(), "month, YYYY-MM")
+		month := fs.String("month", store.CurrentMonth(), "month, YYYY-MM")
 		fs.Parse(rest)
-		m, err := ValidateMonth(*month)
+		m, err := store.ValidateMonth(*month)
 		if err != nil {
 			return err
 		}
-		db, err := Load(path)
+		db, err := store.Load(path)
 		if err != nil {
 			return err
 		}
@@ -893,7 +898,7 @@ func cmdBudget(args []string) error {
 		n := 0
 		for _, c := range db.Categories {
 			if b, from, ok := db.BudgetFor(c.ID, m); ok {
-				fmt.Fprintf(w, "%s\t%s\t%s%s\n", c.Name, c.Kind, FormatMoney(b), inheritedNote(m, from))
+				fmt.Fprintf(w, "%s\t%s\t%s%s\n", c.Name, c.Kind, money.FormatMoney(b), inheritedNote(m, from))
 				total += b
 				n++
 			}
@@ -903,7 +908,7 @@ func cmdBudget(args []string) error {
 			return nil
 		}
 		fmt.Fprintf(w, "\t\t\n")
-		fmt.Fprintf(w, "TOTAL\t\t%s\n", FormatMoney(total))
+		fmt.Fprintf(w, "TOTAL\t\t%s\n", money.FormatMoney(total))
 		return w.Flush()
 	}
 	return fmt.Errorf("unknown budget subcommand %q (want: set, list)", action)
@@ -914,17 +919,17 @@ func cmdBudget(args []string) error {
 func cmdReport(args []string) error {
 	var path string
 	fs := newFS("report", &path)
-	month := fs.String("month", CurrentMonth(), "month, YYYY-MM")
+	month := fs.String("month", store.CurrentMonth(), "month, YYYY-MM")
 	fs.Parse(args)
-	m, err := ValidateMonth(*month)
+	m, err := store.ValidateMonth(*month)
 	if err != nil {
 		return err
 	}
-	db, err := Load(path)
+	db, err := store.Load(path)
 	if err != nil {
 		return err
 	}
-	rep := BuildReport(db, m)
+	rep := store.BuildReport(db, m)
 
 	fmt.Printf("Budget vs actual — %s\n\n", m)
 	if len(rep.Expenses) == 0 && len(rep.Income) == 0 && rep.UncategorizedCount == 0 {
@@ -939,14 +944,14 @@ func cmdReport(args []string) error {
 		for _, r := range rep.Expenses {
 			budget, remain, used := "—", "—", ""
 			if r.HasBudget {
-				budget = FormatMoney(r.BudgetCents) + inheritedNote(m, r.BudgetFrom)
-				remain = FormatMoney(r.RemainCents)
+				budget = money.FormatMoney(r.BudgetCents) + inheritedNote(m, r.BudgetFrom)
+				remain = money.FormatMoney(r.RemainCents)
 				used = fmt.Sprintf("%3.0f%% %s", r.PercentUsed, bar(r.PercentUsed))
 				if r.OverBudget {
 					used += " OVER"
 				}
 			}
-			fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t\n", r.Category, budget, FormatMoney(r.ActualCents), remain, used)
+			fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t\n", r.Category, budget, money.FormatMoney(r.ActualCents), remain, used)
 		}
 		fmt.Fprintf(w, "  \t\t\t\t\t\n")
 		totalRemain := rep.TotalBudgetCents - rep.TotalSpentCents
@@ -955,8 +960,8 @@ func cmdReport(args []string) error {
 			totalUsed = float64(rep.TotalSpentCents) / float64(rep.TotalBudgetCents) * 100
 		}
 		fmt.Fprintf(w, "  TOTAL\t%s\t%s\t%s\t%3.0f%% %s\t\n",
-			FormatMoney(rep.TotalBudgetCents), FormatMoney(rep.TotalSpentCents),
-			FormatMoney(totalRemain), totalUsed, bar(totalUsed))
+			money.FormatMoney(rep.TotalBudgetCents), money.FormatMoney(rep.TotalSpentCents),
+			money.FormatMoney(totalRemain), totalUsed, bar(totalUsed))
 		if err := w.Flush(); err != nil {
 			return err
 		}
@@ -968,9 +973,9 @@ func cmdReport(args []string) error {
 		w := out()
 		fmt.Fprintln(w, "  CATEGORY\tRECEIVED\t")
 		for _, r := range rep.Income {
-			fmt.Fprintf(w, "  %s\t%s\t\n", r.Category, FormatMoney(r.ActualCents))
+			fmt.Fprintf(w, "  %s\t%s\t\n", r.Category, money.FormatMoney(r.ActualCents))
 		}
-		fmt.Fprintf(w, "  TOTAL\t%s\t\n", FormatMoney(rep.TotalIncomeCents))
+		fmt.Fprintf(w, "  TOTAL\t%s\t\n", money.FormatMoney(rep.TotalIncomeCents))
 		if err := w.Flush(); err != nil {
 			return err
 		}
@@ -979,10 +984,10 @@ func cmdReport(args []string) error {
 
 	if rep.UncategorizedCount > 0 {
 		fmt.Printf("%d uncategorized transaction(s), net %s — run: budgit txn list --uncategorized\n\n",
-			rep.UncategorizedCount, FormatMoney(rep.UncategorizedCents))
+			rep.UncategorizedCount, money.FormatMoney(rep.UncategorizedCents))
 	}
 
-	fmt.Printf("NET (income − spend): %s\n", FormatMoney(rep.NetCents))
+	fmt.Printf("NET (income − spend): %s\n", money.FormatMoney(rep.NetCents))
 	return nil
 }
 
@@ -1020,9 +1025,17 @@ func truncate(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
-func abs(v int64) int64 {
-	if v < 0 {
-		return -v
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
 	}
-	return v
+	return many
+}
+
+func cmdServe(args []string) error {
+	var path string
+	fs := newFS("serve", &path)
+	addr := fs.String("addr", "localhost:8080", "address to bind (keep it on loopback)")
+	fs.Parse(args)
+	return server.Run(path, *addr)
 }

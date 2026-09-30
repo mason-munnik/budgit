@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"net/http"
@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mason-munnik/budgit/internal/store"
 )
 
 func TestGuardRejectsForeignHost(t *testing.T) {
@@ -58,20 +60,20 @@ func TestGuardRejectsForeignHost(t *testing.T) {
 // A conflicting write answers 409 and leaves the other write in place.
 func TestWriteHandlerConflict(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "b.json")
-	db, _ := Load(path)
+	db, _ := store.Load(path)
 	mustCategory(t, db, "Groceries")
 	if err := db.Save(); err != nil {
 		t.Fatal(err)
 	}
 
-	h := writeHandler(path, func(db *DB, req writeRequest) error {
+	h := writeHandler(path, func(db *store.DB, req writeRequest) error {
 		// Someone else saves between our Load and our Save.
-		other, _ := Load(path)
+		other, _ := store.Load(path)
 		mustCategory(t, other, "Rent")
 		if err := other.Save(); err != nil {
 			t.Fatal(err)
 		}
-		_, err := AddCategory(db, req.Name, "")
+		_, err := store.AddCategory(db, req.Name, "")
 		return err
 	})
 	r := httptest.NewRequest("POST", "/api/category/add", strings.NewReader(`{"name":"Gas"}`))
@@ -84,5 +86,25 @@ func TestWriteHandlerConflict(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	if !strings.Contains(string(data), "Rent") || strings.Contains(string(data), "Gas") {
 		t.Errorf("file after conflict:\n%s", data)
+	}
+}
+
+func TestCheckLoopback(t *testing.T) {
+	for _, ok := range []string{"localhost:8080", "127.0.0.1:8080", "[::1]:9000"} {
+		if err := checkLoopback(ok); err != nil {
+			t.Errorf("checkLoopback(%q) rejected: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"0.0.0.0:8080", "192.168.1.5:8080", ":8080"} {
+		if err := checkLoopback(bad); err == nil {
+			t.Errorf("checkLoopback(%q) should have been rejected", bad)
+		}
+	}
+}
+
+func mustCategory(t *testing.T, db *store.DB, name string) {
+	t.Helper()
+	if _, err := store.AddCategory(db, name, store.KindExpense); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -1,4 +1,4 @@
-package main
+package store
 
 import "testing"
 
@@ -485,7 +485,7 @@ func TestCategoryRenameDelete(t *testing.T) {
 	if err != nil || gone.Name != "Food" {
 		t.Fatalf("DeleteCategory = %+v, %v", gone, err)
 	}
-	if n != (categoryRemoval{Txns: 1, Budgets: 1, Rules: 1}) {
+	if n != (CategoryRemoval{Txns: 1, Budgets: 1, Rules: 1}) {
 		t.Errorf("removed %+v, want 1 of each", n)
 	}
 	if tx := db.FindTransaction(tx.ID); tx.CategoryID != 0 || tx.AmountCents != 500 {
@@ -501,14 +501,14 @@ func TestEditTransaction(t *testing.T) {
 	db := testDB()
 	refund, _ := AddTransaction(db, "2026-09-01", "Veridian", "Groceries", "return", "+15")
 
-	if tx, err := EditTransaction(db, refund.ID, txnEdit{Amount: str("18")}); err != nil || tx.AmountCents != 1800 {
+	if tx, err := EditTransaction(db, refund.ID, TxnEdit{Amount: str("18")}); err != nil || tx.AmountCents != 1800 {
 		t.Errorf("unsigned edit of a refund = %v, %v; want +1800", tx, err)
 	}
-	if tx, _ := EditTransaction(db, refund.ID, txnEdit{Amount: str("-18")}); tx.AmountCents != -1800 {
+	if tx, _ := EditTransaction(db, refund.ID, TxnEdit{Amount: str("-18")}); tx.AmountCents != -1800 {
 		t.Errorf("signed edit = %d, want -1800", tx.AmountCents)
 	}
 
-	tx, err := EditTransaction(db, refund.ID, txnEdit{
+	tx, err := EditTransaction(db, refund.ID, TxnEdit{
 		Date: str("2026-08-30"), Account: str("Discover"), Description: str("  Trader Joes "),
 	})
 	if err != nil {
@@ -520,13 +520,13 @@ func TestEditTransaction(t *testing.T) {
 
 	// One bad field rejects the whole edit.
 	before := *tx
-	if _, err := EditTransaction(db, tx.ID, txnEdit{Date: str("2026-02-30"), Amount: str("99")}); err == nil {
+	if _, err := EditTransaction(db, tx.ID, TxnEdit{Date: str("2026-02-30"), Amount: str("99")}); err == nil {
 		t.Error("an impossible date should be rejected")
 	}
 	if *db.FindTransaction(tx.ID) != before {
 		t.Error("a rejected edit changed the transaction")
 	}
-	if _, err := EditTransaction(db, 99, txnEdit{}); err == nil {
+	if _, err := EditTransaction(db, 99, TxnEdit{}); err == nil {
 		t.Error("editing a missing transaction should fail")
 	}
 }

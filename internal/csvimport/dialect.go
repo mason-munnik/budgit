@@ -1,4 +1,4 @@
-package main
+package csvimport
 
 import (
 	"bytes"
@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/mason-munnik/budgit/internal/money"
 )
 
 // Every bank writes CSV differently, so a file has to be understood before a
@@ -245,7 +247,7 @@ func (d *dialect) usable() bool {
 
 // detectDialect finds the header row and works out how amounts are written.
 // Overrides in opts win at every step.
-func detectDialect(data []byte, opts importOptions) (*dialect, [][]string, []int, error) {
+func detectDialect(data []byte, opts Options) (*dialect, [][]string, []int, error) {
 	data = stripBOM(data)
 
 	comma := sniffDelimiter(data)
@@ -381,7 +383,7 @@ func (d *dialect) rawAmount(row []string) (int64, bool) {
 	if err != nil || norm == "" {
 		return 0, false
 	}
-	cents, _, err := ParseMoney(norm)
+	cents, _, err := money.ParseMoney(norm)
 	if err != nil {
 		return 0, false
 	}
