@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -99,6 +100,8 @@ func Run(path, addr string) error {
 		}
 		writeJSON(w, buildDashboard(db, m, path))
 	})
+
+	mux.HandleFunc("/api/trends", trendsHandler(path))
 
 	// Every mutation the dashboard can perform. Each one answers with a freshly
 	// built dashboard so the page re-renders from a single round trip.
@@ -201,6 +204,40 @@ func Run(path, addr string) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return srv.Serve(ln)
+}
+
+func trendsHandler(path string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeErr(w, http.StatusMethodNotAllowed, "use GET")
+			return
+		}
+		qv := r.URL.Query()
+		q := store.TrendQuery{Period: qv.Get("period"), Within: qv.Get("within"), End: qv.Get("end"), Compare: qv.Get("compare")}
+		if c := qv.Get("count"); c != "" {
+			n, err := strconv.Atoi(c)
+			if err != nil || n < 1 {
+				writeErr(w, http.StatusBadRequest, fmt.Sprintf("count %q must be a positive number", c))
+				return
+			}
+			q.Count = n
+		}
+
+		dbMu.Lock()
+		defer dbMu.Unlock()
+		db, err := store.Load(path)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		res, err := store.BuildTrends(db, q, store.Today())
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, res)
+	}
 }
 
 func buildDashboard(db *store.DB, month, path string) dashboard {
