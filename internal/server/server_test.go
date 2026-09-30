@@ -108,3 +108,28 @@ func mustCategory(t *testing.T, db *store.DB, name string) {
 		t.Fatal(err)
 	}
 }
+
+func TestTrendsEndpoint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "b.json")
+	h := trendsHandler(path)
+	cases := []struct {
+		method, query string
+		want          int
+	}{
+		{"GET", "period=month", 200},
+		{"GET", "period=bogus", 400},
+		{"GET", "period=month&count=abc", 400},
+		{"GET", "period=month&count=0", 400},
+		{"POST", "period=month", 405},
+	}
+	for _, c := range cases {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(c.method, "/api/trends?"+c.query, nil))
+		if w.Code != c.want {
+			t.Errorf("%s %s: %d, want %d: %s", c.method, c.query, w.Code, c.want, w.Body)
+		}
+		if !strings.HasPrefix(w.Header().Get("Content-Type"), "application/json") {
+			t.Errorf("%s %s: not JSON", c.method, c.query)
+		}
+	}
+}

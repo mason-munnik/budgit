@@ -17,6 +17,13 @@
   --baseline:       #c3c2b7;
   --border:         rgba(11,11,11,0.10);
   --series-1:       #2a78d6;
+  --series-2:       #eb6834;
+  --series-3:       #1baf7a;
+  --series-4:       #eda100;
+  --series-5:       #e87ba4;
+  --series-6:       #008300;
+  --series-7:       #4a3aa7;
+  --series-8:       #e34948;
   --critical:       #d03b3b;
   --good:           #006300;
   --track:          #e8e7e1;
@@ -33,6 +40,13 @@
     --baseline:       #383835;
     --border:         rgba(255,255,255,0.10);
     --series-1:       #3987e5;
+    --series-2:       #d95926;
+    --series-3:       #199e70;
+    --series-4:       #c98500;
+    --series-5:       #d55181;
+    --series-6:       #008300;
+    --series-7:       #9085e9;
+    --series-8:       #e66767;
     --critical:       #d03b3b;
     --good:           #0ca30c;
     --track:          #2c2c2a;
@@ -49,6 +63,13 @@
   --baseline:       #383835;
   --border:         rgba(255,255,255,0.10);
   --series-1:       #3987e5;
+  --series-2:       #d95926;
+  --series-3:       #199e70;
+  --series-4:       #c98500;
+  --series-5:       #d55181;
+  --series-6:       #008300;
+  --series-7:       #9085e9;
+  --series-8:       #e66767;
   --critical:       #d03b3b;
   --good:           #0ca30c;
   --track:          #2c2c2a;
@@ -178,6 +199,41 @@ h2 { font-size: 13px; font-weight: 600; letter-spacing: 0.04em; text-transform: 
 .chart-box { position: relative; height: 260px; }
 .legend { display: flex; gap: 18px; font-size: 13px; color: var(--text-secondary); margin-bottom: 12px; }
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: middle; }
+
+/* ---- compare periods ---- */
+.cmp-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.cmp-head .sub { margin-bottom: 14px; }
+.cmp-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.seg { display: inline-flex; max-width: 100%; overflow-x: auto; background: var(--surface);
+       border: 1px solid var(--border); border-radius: 8px; }
+.seg button { font: inherit; font-size: 13px; white-space: nowrap; cursor: pointer; padding: 5px 11px;
+              color: var(--text-secondary); background: none; border: 0; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button:hover { color: var(--text-primary); background: var(--track); }
+.seg button[aria-pressed="true"] { color: var(--surface); background: var(--text-primary); }
+.cmp-row select { padding: 5px 8px; font-size: 13px; }
+.cmp-nav button.ghost { padding: 3px 11px; font-size: 16px; line-height: 1.2; }
+.crumb { font-size: 13px; color: var(--text-secondary); }
+#cmp-box { transition: opacity .15s; }
+#cmp-box.loading, #cmp-series.loading { opacity: .5; }
+#cmp-box.drill canvas { cursor: pointer; }
+.cmp-note { font-size: 12px; color: var(--text-muted); margin: 8px 0 0; }
+.legend .line { display: inline-block; width: 14px; height: 0; border-top: 2px solid; margin-right: 6px; vertical-align: middle; }
+.legend .line.dash { border-top-style: dashed; }
+.legend .hatch { background: repeating-linear-gradient(45deg, var(--text-muted) 0 1.5px, transparent 1.5px 4px) !important;
+                 border: 1px solid var(--text-muted); }
+.cmp-sub-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 22px 0 6px; }
+.cmp-sub-h h3 { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+                color: var(--text-muted); margin: 0; flex: 1; }
+#cmp-series tr.pick { cursor: pointer; }
+#cmp-series td.act { padding-right: 12px; }
+#cmp-series tr.pick:hover td { background: var(--page); }
+#cmp-series tr.group td { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+                          color: var(--text-muted); padding-top: 14px; }
+button.chip { width: 16px; height: 16px; padding: 0; border-radius: 4px; cursor: pointer; vertical-align: middle;
+              background: none; border: 1.5px solid var(--baseline); }
+button.chip[aria-pressed="true"] { border-color: transparent; }
+.delta { white-space: nowrap; }
 
 /* ---- tables ---- */
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
@@ -338,7 +394,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   </section>
 
   <section class="card">
-    <h2>Spending trend</h2>
+    <h2>budgit vs. real</h2>
     <p class="sub">Total monthly spend against total budgeted, last 6 months.</p>
     <div class="legend">
       <span><i style="background:var(--series-1)"></i>Spent</span>
@@ -348,6 +404,45 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
     </div>
     <div class="chart-box" id="trend-box"><canvas id="trend"></canvas></div>
     <div id="trend-table" class="hidden scroll"></div>
+  </section>
+
+  <section class="card" id="cmp-card">
+    <div class="cmp-head">
+      <div style="flex:1;min-width:0">
+        <h2>Compare periods</h2>
+        <p class="sub" id="cmp-sub">Loading…</p>
+      </div>
+      <div class="seg" id="cmp-kind" role="group" aria-label="Chart type">
+        <button type="button" data-v="line">Line</button><button type="button" data-v="bar">Bar</button>
+      </div>
+    </div>
+    <div class="cmp-row">
+      <div class="seg" id="cmp-period" role="group" aria-label="Group by">
+        <button type="button" data-v="day">Day</button><button type="button" data-v="week">Week</button><button type="button" data-v="month">Month</button><button type="button" data-v="quarter">Quarter</button><button type="button" data-v="half">6 months</button><button type="button" data-v="year">Year</button>
+      </div>
+      <select id="cmp-count" aria-label="How many periods"></select>
+      <div class="seg" id="cmp-compare" role="group" aria-label="Compare with">
+        <button type="button" data-v="previous">vs previous</button><button type="button" data-v="year">vs last year</button><button type="button" data-v="none">No compare</button>
+      </div>
+    </div>
+    <div class="cmp-row cmp-nav">
+      <button type="button" class="ghost" id="cmp-prev" aria-label="Earlier" title="Earlier">‹</button>
+      <button type="button" class="ghost" id="cmp-next" aria-label="Later" title="Later">›</button>
+      <button type="button" class="mini hidden" id="cmp-back"></button>
+      <button type="button" class="mini hidden" id="cmp-latest">Jump to latest</button>
+      <span class="crumb" id="cmp-crumb"></span>
+    </div>
+    <div class="legend" id="cmp-legend"></div>
+    <div class="chart-box" id="cmp-box"><canvas id="cmp-chart"></canvas></div>
+    <div id="cmp-table" class="hidden scroll"></div>
+    <p class="cmp-note" id="cmp-note"></p>
+    <div class="cmp-sub-h">
+      <h3>What changed · click a row to chart it</h3>
+      <button type="button" class="mini" id="cmp-top">Top 5 categories</button>
+      <button type="button" class="mini" id="cmp-reset">Reset</button>
+      <button type="button" class="mini" id="cmp-table-toggle">Table view</button>
+    </div>
+    <div class="scroll" id="cmp-series"></div>
   </section>
 
   <section class="card">
@@ -501,6 +596,7 @@ function render() {
   renderRules(d.rules);
   renderTrend(d.trend);
   renderTxns(d.transactions);
+  cmpLoad(); // edits change the numbers too
 }
 
 function renderTiles(d, rep) {
@@ -1011,6 +1107,400 @@ function renderTrend(trend) {
   });
 }
 
+// ---- compare periods ----
+const CMP_COUNTS = { day: [7, 14, 30, 60, 90], week: [4, 8, 12, 26, 52], month: [3, 6, 12, 24, 36],
+  quarter: [4, 8, 12], half: [2, 4, 6, 10], year: [2, 3, 5, 10] };
+const CMP_DEFAULT = { day: 30, week: 12, month: 12, quarter: 8, half: 6, year: 5 };
+const CMP_CHILD = { year: 'month', half: 'month', quarter: 'month', month: 'week', week: 'day' };
+const CMP_NOUN = { day: 'days', week: 'weeks', month: 'months', quarter: 'quarters', half: '6-month periods', year: 'years' };
+const CMP_MAX = 8; // one per categorical color
+
+let cmp = { period: 'month', counts: {}, compare: 'previous', kind: 'line', table: false,
+            sel: [{ key: 'spent', slot: 1 }], end: '', within: '', stack: [] };
+let cmpData = null, cmpChart = null, cmpSeq = 0;
+try {
+  const s = JSON.parse(localStorage.getItem('budgit-compare') || 'null');
+  if (s && CMP_DEFAULT[s.period]) {
+    cmp.period = s.period;
+    cmp.counts = s.counts || {};
+    cmp.compare = ['previous', 'year', 'none'].includes(s.compare) ? s.compare : 'previous';
+    cmp.kind = s.kind === 'bar' ? 'bar' : 'line';
+    if (Array.isArray(s.sel)) cmp.sel = s.sel.filter(x => x && x.key && x.slot >= 1 && x.slot <= CMP_MAX);
+  }
+} catch (e) { /* private window or bad JSON */ }
+
+function cmpSave() {
+  const period = cmp.stack.length ? cmp.stack[0].period : cmp.period;
+  try {
+    localStorage.setItem('budgit-compare', JSON.stringify(
+      { period, counts: cmp.counts, compare: cmp.compare, kind: cmp.kind, sel: cmp.sel }));
+  } catch (e) { /* private window */ }
+}
+
+async function cmpLoad() {
+  const p = new URLSearchParams({ period: cmp.period, compare: cmp.compare });
+  if (cmp.within) p.set('within', cmp.within);
+  else p.set('count', cmp.counts[cmp.period] || CMP_DEFAULT[cmp.period]);
+  if (cmp.end) p.set('end', cmp.end);
+  const seq = ++cmpSeq; // a slower, older response must not overwrite a newer one
+  const busy = on => ['cmp-box', 'cmp-series'].forEach(id => document.getElementById(id).classList.toggle('loading', on));
+  busy(true);
+  try {
+    const res = await fetch('/api/trends?' + p);
+    let data = null;
+    try { data = await res.json(); } catch (e) { /* fall through to the status */ }
+    if (seq !== cmpSeq) return;
+    if (!res.ok) throw new Error((data && data.error) || ('request failed: ' + res.status));
+    cmpData = data;
+    cmpRender();
+  } catch (e) {
+    if (seq === cmpSeq) document.getElementById('cmp-sub').textContent = 'Could not load: ' + (e.message || e);
+  } finally {
+    if (seq === cmpSeq) busy(false);
+  }
+}
+
+function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return 'rgba(' + (n >> 16) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+function hatch(color) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 8;
+  const g = c.getContext('2d');
+  g.fillStyle = hexA(color, 0.14);
+  g.fillRect(0, 0, 8, 8);
+  g.strokeStyle = color;
+  g.lineWidth = 1.5;
+  g.beginPath();
+  g.moveTo(0, 8); g.lineTo(8, 0);
+  g.moveTo(-2, 2); g.lineTo(2, -2);
+  g.moveTo(6, 10); g.lineTo(10, 6);
+  g.stroke();
+  return g.createPattern(c, 'repeat');
+}
+function shortDate(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+// Spending going up is bad; income or net going up is good.
+function upIsGood(kind) { return kind === 'income' || kind === 'net'; }
+function change(now, before, kind) {
+  if (now === before) return { text: 'no change', cls: '' };
+  const arrow = now > before ? '▲' : '▼';
+  const cls = (now > before) === upIsGood(kind) ? 'pos' : 'neg';
+  const diff = (now > before ? '+' : '−') + money(Math.abs(now - before), { whole: true });
+  if (before === 0) return { text: diff + ' · new', cls };
+  const pct = Math.round(Math.abs(now - before) / Math.abs(before) * 100);
+  return { text: diff + ' · ' + arrow + ' ' + pct + '%', cls };
+}
+
+function cmpPressed(id, value) {
+  for (const b of document.querySelectorAll('#' + id + ' button')) {
+    b.setAttribute('aria-pressed', b.dataset.v === value ? 'true' : 'false');
+  }
+}
+
+function cmpRender() {
+  const d = cmpData;
+  cmpPressed('cmp-period', d.period);
+  cmpPressed('cmp-compare', d.compare);
+  cmpPressed('cmp-kind', cmp.kind);
+
+  const sel = document.getElementById('cmp-count');
+  sel.classList.toggle('hidden', !!d.within);
+  sel.innerHTML = '';
+  const counts = CMP_COUNTS[d.period].slice();
+  if (!d.within && !counts.includes(d.count)) counts.push(d.count);
+  for (const n of counts.sort((a, b) => a - b)) {
+    const o = el('option', null, 'Last ' + n + ' ' + CMP_NOUN[d.period]);
+    o.value = n;
+    if (n === d.count) o.selected = true;
+    sel.appendChild(o);
+  }
+
+  document.getElementById('cmp-sub').textContent =
+    d.label + (d.compare !== 'none' ? '  vs  ' + d.compare_label : '');
+  document.getElementById('cmp-prev').disabled = !d.prev_end;
+  document.getElementById('cmp-next').disabled = !d.next_end;
+  document.getElementById('cmp-latest').classList.toggle('hidden', !cmp.end || d.end >= d.latest);
+  const back = document.getElementById('cmp-back');
+  back.classList.toggle('hidden', !cmp.stack.length);
+  if (cmp.stack.length) back.textContent = '‹ Back to ' + cmp.stack[cmp.stack.length - 1].noun;
+  document.getElementById('cmp-crumb').textContent =
+    CMP_CHILD[d.period] && typeof Chart !== 'undefined' ? 'Click a point to zoom into its ' + CMP_NOUN[CMP_CHILD[d.period]] : '';
+
+  cmpDraw();
+  cmpSeries();
+}
+
+function cmpShown() {
+  const byKey = new Map(cmpData.series.map(s => [s.key, s]));
+  return cmp.sel.filter(x => byKey.has(x.key)).map(x => Object.assign({ s: byKey.get(x.key) }, x));
+}
+
+function cmpDraw() {
+  const d = cmpData;
+  if (!d) return;
+  const shown = cmpShown();
+  const hasCmp = d.compare !== 'none';
+  const bar = cmp.kind === 'bar';
+  const partial = d.buckets.map(b => b.partial);
+  const anyPartial = partial.some(Boolean);
+
+  // Legend: identity per series, then how "earlier" and "in progress" are drawn.
+  const legend = document.getElementById('cmp-legend');
+  legend.innerHTML = '';
+  legend.style.flexWrap = 'wrap';
+  for (const x of shown) {
+    const sp = el('span');
+    const key = el('i', bar ? null : 'line');
+    if (bar) key.style.background = 'var(--series-' + x.slot + ')';
+    else key.style.borderColor = 'var(--series-' + x.slot + ')';
+    sp.appendChild(key);
+    sp.appendChild(document.createTextNode(x.s.name));
+    legend.appendChild(sp);
+  }
+  if (shown.length && hasCmp) {
+    const sp = el('span');
+    sp.style.color = 'var(--text-muted)';
+    const key = el('i', bar ? 'hatch' : 'line dash');
+    if (!bar) key.style.borderColor = 'var(--text-muted)';
+    sp.appendChild(key);
+    sp.appendChild(document.createTextNode('earlier'));
+    legend.appendChild(sp);
+  }
+  if (shown.length && anyPartial) {
+    const sp = el('span', null, bar ? 'faded = partial period' : 'hollow point = partial period');
+    sp.style.color = 'var(--text-muted)';
+    legend.appendChild(sp);
+  }
+
+  const notes = [];
+  if (!d.data_start) notes.push('No transactions yet — add or import some and they show up here.');
+  else if (!shown.length) notes.push('Nothing charted — click a row below to add it.');
+  if (hasCmp && d.data_start && d.compare_buckets.length && d.compare_buckets[0].start < d.data_start) {
+    notes.push(d.compare_buckets[d.count - 1].end < d.data_start
+      ? 'There is no data before ' + shortDate(d.data_start) + ', so the earlier side reads $0.'
+      : 'Data starts ' + shortDate(d.data_start) + '; earlier buckets before that read $0.');
+  }
+  if (anyPartial && hasCmp) notes.push('Partial periods are compared with the same days of the earlier one.');
+  document.getElementById('cmp-note').textContent = notes.join(' ');
+
+  cmpBucketTable(shown, hasCmp);
+
+  const box = document.getElementById('cmp-box');
+  const tbl = document.getElementById('cmp-table');
+  if (typeof Chart === 'undefined') {
+    // No chart library: the table is the view.
+    box.classList.add('hidden');
+    tbl.classList.remove('hidden');
+    document.getElementById('cmp-kind').classList.add('hidden');
+    document.getElementById('cmp-table-toggle').classList.add('hidden');
+    return;
+  }
+  box.classList.toggle('hidden', cmp.table);
+  box.classList.toggle('drill', !!CMP_CHILD[d.period]);
+  tbl.classList.toggle('hidden', !cmp.table);
+  document.getElementById('cmp-table-toggle').textContent = cmp.table ? 'Chart view' : 'Table view';
+
+  const surface = cssVar('--surface');
+  const datasets = [];
+  for (const x of shown) {
+    const color = cssVar('--series-' + x.slot);
+    const now = x.s.values.map(c => c / 100);
+    const before = x.s.compare.map(c => c / 100);
+    if (bar) {
+      const common = { borderRadius: 4, borderSkipped: 'start', maxBarThickness: 26,
+                       categoryPercentage: 0.8, barPercentage: 0.92 };
+      datasets.push(Object.assign({ label: x.s.name, key: x.key, data: now,
+        backgroundColor: partial.map(p => p ? hexA(color, 0.45) : color) }, common));
+      if (hasCmp) datasets.push(Object.assign({ label: x.s.name, key: x.key, earlier: true, data: before,
+        backgroundColor: hatch(color), borderColor: color, borderWidth: 1 }, common));
+    } else {
+      datasets.push({ label: x.s.name, key: x.key, data: now, borderColor: color, backgroundColor: color,
+        borderWidth: 2, pointRadius: 4, pointHoverRadius: 6, tension: 0,
+        pointBackgroundColor: partial.map(p => p ? surface : color),
+        pointBorderColor: partial.map(p => p ? color : surface), pointBorderWidth: 2 });
+      if (hasCmp) datasets.push({ label: x.s.name, key: x.key, earlier: true, data: before,
+        borderColor: hexA(color, 0.6), backgroundColor: hexA(color, 0.6),
+        borderWidth: 1.5, borderDash: [5, 4], pointRadius: 0, pointHoverRadius: 4, tension: 0 });
+    }
+  }
+
+  const byKey = new Map(d.series.map(s => [s.key, s]));
+  if (cmpChart) cmpChart.destroy();
+  cmpChart = new Chart(document.getElementById('cmp-chart'), {
+    type: bar ? 'bar' : 'line',
+    data: { labels: d.buckets.map(b => b.label), datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: { duration: 200 },
+      interaction: { mode: 'index', intersect: false },
+      onClick: evt => {
+        const hit = cmpChart.getElementsAtEventForMode(evt, 'index', { intersect: false }, false);
+        if (hit.length) cmpDrill(hit[0].index);
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: surface, titleColor: cssVar('--text-primary'),
+          bodyColor: cssVar('--text-secondary'), footerColor: cssVar('--text-muted'),
+          borderColor: cssVar('--border'), borderWidth: 1, padding: 10,
+          boxWidth: 10, boxHeight: 2, usePointStyle: false,
+          callbacks: {
+            title: items => d.buckets[items[0].dataIndex].title + (partial[items[0].dataIndex] ? ' (partial)' : ''),
+            afterTitle: items => hasCmp ? 'vs ' + d.compare_buckets[items[0].dataIndex].title : '',
+            label: c => {
+              const cents = Math.round(c.parsed.y * 100);
+              if (c.dataset.earlier) return ' ' + money(cents) + '   ' + c.dataset.label + ', earlier';
+              let s = ' ' + money(cents) + '   ' + c.dataset.label;
+              if (hasCmp) {
+                const s0 = byKey.get(c.dataset.key);
+                s += '   ' + change(s0.values[c.dataIndex], s0.compare[c.dataIndex], s0.kind).text;
+              }
+              return s;
+            },
+            footer: () => CMP_CHILD[d.period] ? 'Click to see ' + CMP_NOUN[CMP_CHILD[d.period]] : '',
+          },
+        },
+      },
+      scales: {
+        x: { grid: { display: false }, border: { color: cssVar('--baseline') },
+             ticks: { color: cssVar('--text-muted'), font: { size: 12 }, maxRotation: 0, autoSkipPadding: 12 } },
+        y: { beginAtZero: bar, grace: '10%', // bars must start at zero; lines can zoom in
+             grid: { color: cssVar('--grid'), drawTicks: false }, border: { display: false },
+             ticks: { color: cssVar('--text-muted'), font: { size: 12 }, padding: 8,
+                      callback: value => money(Math.round(value * 100), { whole: true }) } },
+      },
+    },
+  });
+}
+
+function cmpBucketTable(shown, hasCmp) {
+  const d = cmpData;
+  const tbl = el('table');
+  const hr = el('tr');
+  hr.appendChild(el('th', null, 'Period'));
+  for (const x of shown) {
+    hr.appendChild(el('th', 'num', x.s.name));
+    if (hasCmp) hr.appendChild(el('th', 'num', 'Earlier'));
+  }
+  if (CMP_CHILD[d.period]) hr.appendChild(el('th', 'act', ''));
+  const thead = el('thead');
+  thead.appendChild(hr);
+  tbl.appendChild(thead);
+  const tb = el('tbody');
+  d.buckets.forEach((b, i) => {
+    const tr = el('tr');
+    const td = el('td', null, b.title + (b.partial ? ' (partial)' : ''));
+    if (hasCmp) td.title = 'vs ' + d.compare_buckets[i].title;
+    tr.appendChild(td);
+    for (const x of shown) {
+      tr.appendChild(el('td', 'num', money(x.s.values[i])));
+      if (hasCmp) tr.appendChild(el('td', 'num dim', money(x.s.compare[i])));
+    }
+    if (CMP_CHILD[d.period]) {
+      const cell = el('td', 'act');
+      const btn = el('button', 'mini', 'Zoom in');
+      btn.type = 'button';
+      btn.addEventListener('click', () => cmpDrill(i));
+      cell.appendChild(btn);
+      tr.appendChild(cell);
+    }
+    tb.appendChild(tr);
+  });
+  tbl.appendChild(tb);
+  const holder = document.getElementById('cmp-table');
+  holder.innerHTML = '';
+  holder.appendChild(tbl);
+}
+
+// The series table doubles as the picker: click a row to chart it.
+function cmpSeries() {
+  const d = cmpData;
+  const hasCmp = d.compare !== 'none';
+  const slots = new Map(cmp.sel.map(x => [x.key, x.slot]));
+  const tbl = el('table');
+  const hr = el('tr');
+  for (const [h, cls] of [['', 'act'], ['', ''], ['This range', 'num'], ['Earlier', 'num'], ['Change', 'num']]) {
+    if (!hasCmp && (h === 'Earlier' || h === 'Change')) continue;
+    hr.appendChild(el('th', cls, h));
+  }
+  const thead = el('thead');
+  thead.appendChild(hr);
+  tbl.appendChild(thead);
+  const tb = el('tbody');
+  const groups = [
+    ['Overview', d.series.filter(s => s.summary)],
+    ['Spending by category', d.series.filter(s => !s.summary && s.kind === 'expense')],
+    ['Income by category', d.series.filter(s => !s.summary && s.kind === 'income')],
+  ];
+  for (const [name, list] of groups) {
+    if (!list.length) continue;
+    const g = el('tr', 'group');
+    const gtd = el('td', null, name);
+    gtd.colSpan = hasCmp ? 5 : 3;
+    g.appendChild(gtd);
+    tb.appendChild(g);
+    for (const s of list) {
+      const tr = el('tr', 'pick');
+      const slot = slots.get(s.key);
+      const chipTd = el('td', 'act');
+      const chip = el('button', 'chip');
+      chip.type = 'button';
+      chip.setAttribute('aria-pressed', slot ? 'true' : 'false');
+      chip.setAttribute('aria-label', (slot ? 'Remove ' : 'Chart ') + s.name);
+      if (slot) chip.style.background = 'var(--series-' + slot + ')';
+      chip.addEventListener('click', e => { e.stopPropagation(); cmpToggle(s.key); });
+      chipTd.appendChild(chip);
+      tr.appendChild(chipTd);
+      tr.appendChild(el('td', null, s.name));
+      tr.appendChild(el('td', 'num', money(s.total)));
+      if (hasCmp) {
+        tr.appendChild(el('td', 'num dim', money(s.compare_total)));
+        const c = change(s.total, s.compare_total, s.kind);
+        tr.appendChild(el('td', 'num delta ' + c.cls, c.text));
+      }
+      tr.addEventListener('click', () => cmpToggle(s.key));
+      tb.appendChild(tr);
+    }
+  }
+  tbl.appendChild(tb);
+  const holder = document.getElementById('cmp-series');
+  holder.innerHTML = '';
+  holder.appendChild(tbl);
+}
+
+function cmpToggle(key) {
+  const i = cmp.sel.findIndex(x => x.key === key);
+  if (i >= 0) {
+    cmp.sel.splice(i, 1);
+  } else {
+    // Keep each series' color while it stays charted; a new one takes the first free color.
+    const used = new Set(cmp.sel.map(x => x.slot));
+    let slot = 1;
+    while (used.has(slot)) slot++;
+    if (slot > CMP_MAX) {
+      document.getElementById('cmp-note').textContent = 'Up to ' + CMP_MAX + ' at once — remove one first.';
+      return;
+    }
+    cmp.sel.push({ key, slot });
+  }
+  cmpSave();
+  cmpRender();
+}
+
+function cmpDrill(i) {
+  const d = cmpData, child = CMP_CHILD[d.period];
+  if (!child) return;
+  cmp.stack.push({ period: cmp.period, within: cmp.within, end: cmp.end, noun: CMP_NOUN[d.period] });
+  cmp.period = child;
+  cmp.within = d.period;
+  cmp.end = d.buckets[i].end;
+  cmpLoad();
+}
+
 function renderTxns(txns) {
   txns = txns || [];
   const sub = document.getElementById('txn-sub');
@@ -1341,6 +1831,74 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
   document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark');
   try { localStorage.setItem('budgit-theme', dark ? 'light' : 'dark'); } catch (e) { /* private window */ }
   if (state) renderTrend(state.trend); // chart colors are baked in at draw time
+  cmpDraw();
+});
+
+document.getElementById('cmp-period').addEventListener('click', e => {
+  const v = e.target.dataset && e.target.dataset.v;
+  if (!v) return;
+  cmp.period = v;
+  cmp.within = '';
+  cmp.stack = [];
+  cmpSave();
+  cmpLoad();
+});
+document.getElementById('cmp-compare').addEventListener('click', e => {
+  const v = e.target.dataset && e.target.dataset.v;
+  if (!v) return;
+  cmp.compare = v;
+  cmpSave();
+  cmpLoad();
+});
+document.getElementById('cmp-kind').addEventListener('click', e => {
+  const v = e.target.dataset && e.target.dataset.v;
+  if (!v || !cmpData) return;
+  cmp.kind = v;
+  cmpSave();
+  cmpRender();
+});
+document.getElementById('cmp-count').addEventListener('change', e => {
+  cmp.counts[cmp.period] = Number(e.target.value);
+  cmpSave();
+  cmpLoad();
+});
+document.getElementById('cmp-prev').addEventListener('click', () => {
+  if (!cmpData || !cmpData.prev_end) return;
+  cmp.end = cmpData.prev_end;
+  cmpLoad();
+});
+document.getElementById('cmp-next').addEventListener('click', () => {
+  if (!cmpData || !cmpData.next_end) return;
+  cmp.end = cmpData.next_end >= cmpData.latest ? '' : cmpData.next_end;
+  cmpLoad();
+});
+document.getElementById('cmp-latest').addEventListener('click', () => {
+  cmp.end = '';
+  cmpLoad();
+});
+document.getElementById('cmp-back').addEventListener('click', () => {
+  const top = cmp.stack.pop();
+  if (!top) return;
+  cmp.period = top.period;
+  cmp.within = top.within;
+  cmp.end = top.end;
+  cmpLoad();
+});
+document.getElementById('cmp-top').addEventListener('click', () => {
+  if (!cmpData) return;
+  const cats = cmpData.series.filter(s => !s.summary && s.kind === 'expense').slice(0, 5);
+  cmp.sel = cats.map((s, i) => ({ key: s.key, slot: i + 1 }));
+  cmpSave();
+  cmpRender();
+});
+document.getElementById('cmp-reset').addEventListener('click', () => {
+  cmp.sel = [{ key: 'spent', slot: 1 }];
+  cmpSave();
+  if (cmpData) cmpRender();
+});
+document.getElementById('cmp-table-toggle').addEventListener('click', () => {
+  cmp.table = !cmp.table;
+  cmpDraw();
 });
 let saved = null;
 try { saved = localStorage.getItem('budgit-theme'); } catch (e) { /* private window */ }
