@@ -24,13 +24,17 @@ func main() {
 	a := app.New(store.DefaultPath())
 
 	err = wails.Run(&options.App{
-		Title:            "budgit",
-		Width:            1200,
-		Height:           860,
-		MinWidth:         720,
-		MinHeight:        520,
-		AssetServer:      &assetserver.Options{Assets: assets},
-		Bind:             []any{a},
+		Title:       "budgit",
+		Width:       1200,
+		Height:      860,
+		MinWidth:    720,
+		MinHeight:   520,
+		AssetServer: &assetserver.Options{Assets: assets},
+		OnStartup:   app.Startup(a),
+		Bind:        []any{a},
+		// Hands the page the absolute paths of files dropped on any element
+		// styled --wails-drop-target: drop (the import panel's square).
+		DragAndDrop:      &options.DragAndDrop{EnableFileDrop: true},
 		BackgroundColour: &options.RGBA{R: 255, G: 255, B: 255, A: 255},
 	})
 	if err != nil {

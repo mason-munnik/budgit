@@ -251,6 +251,37 @@ td.dim { color: var(--text-secondary); }
 .hidden { display: none; }
 footer { color: var(--text-muted); font-size: 12px; margin-top: 28px; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+
+/* ---- import panel ---- */
+dialog#imp {
+  width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 48px);
+  padding: 22px 24px; border: 1px solid var(--border); border-radius: 14px;
+  background: var(--surface); color: var(--text-primary);
+}
+dialog#imp::backdrop { background: rgba(0,0,0,0.35); }
+dialog#imp h2 { margin: 0 0 14px; font-size: 17px; font-weight: 600; }
+.imp-drop {
+  /* Wails delivers dropped files' paths only over elements carrying this. */
+  --wails-drop-target: drop;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  width: 100%; min-height: 180px; margin: 14px 0 4px; cursor: pointer;
+  font: inherit; color: var(--text-secondary); background: var(--page);
+  border: 2px dashed var(--baseline); border-radius: 12px;
+}
+.imp-drop:hover, .imp-drop.wails-drop-target-active { border-color: var(--series-1); color: var(--text-primary); }
+.imp-drop .plus { font-size: 44px; line-height: 1; font-weight: 300; }
+.imp-drop.has-file { min-height: 64px; flex-direction: row; gap: 10px; }
+.imp-drop.has-file .plus { font-size: 22px; }
+.imp-head { font-size: 15px; margin: 16px 0 4px; }
+.imp-warn {
+  border: 1px solid var(--series-4); border-radius: 10px; padding: 10px 12px; margin: 12px 0;
+  font-size: 13px; color: var(--text-primary);
+}
+.imp-warn table { margin-top: 6px; font-size: 13px; }
+.imp-pick { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+.imp-pick > div { border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
+.imp-pick table { font-size: 13px; margin-bottom: 10px; }
+@media (max-width: 560px) { .imp-pick { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -258,9 +289,29 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
   <header>
     <h1>budgit <span id="month-label"></span></h1>
     <div class="spacer"></div>
+    <button class="ghost" id="imp-open">Import statement</button>
     <select id="month-picker" aria-label="Month"></select>
     <button class="ghost" id="theme-toggle" title="Toggle light/dark">◐</button>
   </header>
+
+  <dialog id="imp" aria-labelledby="imp-title">
+    <h2 id="imp-title">Import a bank statement</h2>
+    <div class="field">
+      <label for="imp-account">Account</label>
+      <select id="imp-account"></select>
+    </div>
+    <button type="button" class="imp-drop" id="imp-drop">
+      <span class="plus">+</span>
+      <span id="imp-drop-label">Drop a CSV here, or click to choose one</span>
+    </button>
+    <div id="imp-body"></div>
+    <p class="form-error hidden" id="imp-error"></p>
+    <div class="form-foot">
+      <button type="button" class="primary hidden" id="imp-go">Import</button>
+      <button type="button" class="ghost" id="imp-close">Cancel</button>
+      <span class="hint" id="imp-status"></span>
+    </div>
+  </dialog>
 
   <div class="card hidden" id="error"></div>
 
@@ -547,7 +598,9 @@ function showError(msg, title) {
 // wrap it so every catch below can keep reading err.message.
 async function call(method, arg) {
   try {
-    return await window.go.app.App[method](arg);
+    // Wails checks the argument count, so a no-argument method gets none.
+    const fn = window.go.app.App[method];
+    return await (arg === undefined ? fn() : fn(arg));
   } catch (e) {
     throw new Error(typeof e === 'string' ? e : (e && e.message) || String(e));
   }
@@ -1900,6 +1953,171 @@ document.getElementById('cmp-table-toggle').addEventListener('click', () => {
 let saved = null;
 try { saved = localStorage.getItem('budgit-theme'); } catch (e) { /* private window */ }
 if (saved) document.documentElement.setAttribute('data-theme', saved);
+
+// ---- import panel ----
+// The file never passes through this page: the Open panel and Wails' file
+// drop both hand over a path, and Go reads the file itself. imp.fingerprint is
+// the SHA-256 Go saw at preview; ImportCSV refuses bytes that no longer match.
+const imp = { path: '', fingerprint: '', sign: '', ready: false };
+const impDialog = document.getElementById('imp');
+
+function impRowsTable(rows, withCategory) {
+  const table = el('table');
+  for (const r of rows) {
+    const tr = el('tr');
+    tr.appendChild(el('td', 'dim', r.date));
+    tr.appendChild(el('td', null, r.description));
+    if (withCategory) tr.appendChild(el('td', 'dim', r.category));
+    tr.appendChild(el('td', 'num', money(r.amount_cents)));
+    table.appendChild(tr);
+  }
+  return table;
+}
+
+function impRender(p, notice) {
+  const body = document.getElementById('imp-body');
+  body.innerHTML = '';
+  imp.fingerprint = p.fingerprint;
+  imp.ready = false;
+  document.getElementById('imp-drop').classList.add('has-file');
+  document.getElementById('imp-drop-label').textContent = p.file_name + ' — drop or click to choose another';
+  if (notice) body.appendChild(el('div', 'imp-warn', notice));
+
+  if (p.sign_conflict) {
+    // Option 2: the user judges by eye which version of the rows is right.
+    body.appendChild(el('p', 'imp-head', 'Which of these looks right?'));
+    body.appendChild(el('p', 'sub', 'This file\'s amounts disagree with its own debit/credit column. ' +
+      'Purchases should be negative (money going out).'));
+    const pick = el('div', 'imp-pick');
+    for (const [sign, rows] of [['keep', p.as_is], ['flip', p.flipped]]) {
+      const col = el('div');
+      col.appendChild(impRowsTable(rows.slice(0, 5), false));
+      const b = el('button', 'ghost', 'These look right');
+      b.type = 'button';
+      b.addEventListener('click', () => { imp.sign = sign; impPreview(); });
+      col.appendChild(b);
+      pick.appendChild(col);
+    }
+    body.appendChild(pick);
+    document.getElementById('imp-go').classList.add('hidden');
+    return;
+  }
+
+  const head = el('p', 'imp-head');
+  head.append(p.new + (p.new === 1 ? ' new transaction' : ' new transactions') + ' into ');
+  head.appendChild(el('strong', null, p.account));
+  body.appendChild(head);
+  const notes = [];
+  if (p.matched) notes.push(p.matched + ' already entered by hand (kept, linked to the bank)');
+  if (p.known) notes.push(p.known + ' already imported (skipped)');
+  if (p.pending) notes.push(p.pending + ' pending (skipped)');
+  if (p.skipped) notes.push(p.skipped + ' blank or total lines (skipped)');
+  if (p.new) notes.push(p.categorized + ' of the new ones categorized');
+  if (notes.length) body.appendChild(el('p', 'sub', notes.join(' · ')));
+
+  if (p.suspects.length) {
+    const warn = el('div', 'imp-warn');
+    warn.appendChild(el('strong', null, p.suspects.length === 1
+      ? '1 possible duplicate' : p.suspects.length + ' possible duplicates'));
+    warn.append(' — each lands on the same day and amount as a transaction you already have. ' +
+      'Both will be kept; delete one afterwards if it was the same purchase.');
+    warn.appendChild(impRowsTable(p.suspects, false));
+    body.appendChild(warn);
+  }
+  if (p.sample.length) {
+    body.appendChild(impRowsTable(p.sample, true));
+    if (p.new > p.sample.length) body.appendChild(el('p', 'hint', '…and ' + (p.new - p.sample.length) + ' more.'));
+  }
+  imp.ready = p.new > 0 || p.matched > 0;
+  const go = document.getElementById('imp-go');
+  go.textContent = p.new ? 'Import ' + p.new : 'Link ' + p.matched;
+  go.classList.toggle('hidden', !imp.ready);
+  if (!imp.ready) body.appendChild(el('p', 'sub', 'Nothing new in this file.'));
+}
+
+function impRequest() {
+  return {
+    path: imp.path, account: document.getElementById('imp-account').value,
+    sign: imp.sign, fingerprint: imp.fingerprint, month: state ? state.month : '',
+  };
+}
+
+async function impPreview() {
+  if (!imp.path) return;
+  formError('imp', '');
+  document.getElementById('imp-go').classList.add('hidden');
+  try {
+    impRender(await call('PreviewImport', impRequest()));
+  } catch (e) {
+    document.getElementById('imp-body').innerHTML = '';
+    formError('imp', e.message);
+  }
+}
+
+function impSetFile(path) {
+  if (!path) return;
+  Object.assign(imp, { path, fingerprint: '', sign: '' }); // a new file gets its own sign question
+  impPreview();
+}
+
+function impOpen() {
+  const sel = document.getElementById('imp-account');
+  const prev = sel.value;
+  sel.innerHTML = '';
+  if (state.accounts.length !== 1) sel.appendChild(el('option', null, 'Choose an account…')).value = '';
+  for (const a of state.accounts) sel.appendChild(el('option', null, a.name)).value = String(a.id);
+  if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+
+  Object.assign(imp, { path: '', fingerprint: '', sign: '', ready: false });
+  document.getElementById('imp-body').innerHTML = '';
+  document.getElementById('imp-drop').classList.remove('has-file');
+  document.getElementById('imp-drop-label').textContent = 'Drop a CSV here, or click to choose one';
+  document.getElementById('imp-go').classList.add('hidden');
+  document.getElementById('imp-close').textContent = 'Cancel';
+  formError('imp', '');
+  formStatus('imp', '');
+  // Listen for drops only while the panel is open, and only on the square.
+  window.runtime.OnFileDrop((x, y, paths) => impSetFile(paths[0]), true);
+  impDialog.showModal();
+}
+
+document.getElementById('imp-open').addEventListener('click', impOpen);
+impDialog.addEventListener('close', () => window.runtime.OnFileDropOff());
+document.getElementById('imp-close').addEventListener('click', () => impDialog.close());
+document.getElementById('imp-account').addEventListener('change', impPreview);
+document.getElementById('imp-drop').addEventListener('click', async () => {
+  try {
+    impSetFile(await call('ChooseCSV'));
+  } catch (e) {
+    formError('imp', e.message);
+  }
+});
+document.getElementById('imp-go').addEventListener('click', async () => {
+  if (!imp.ready) return;
+  const go = document.getElementById('imp-go');
+  go.disabled = true;
+  formError('imp', '');
+  try {
+    const out = await call('ImportCSV', impRequest());
+    if (out.changed) {
+      // Refuse and re-preview: never import bytes the user has not seen.
+      impRender(out.preview, 'This file changed since you previewed it, so nothing was imported. ' +
+        'Here is what it holds now.');
+      return;
+    }
+    state = out.dashboard;
+    render();
+    document.getElementById('imp-body').innerHTML = '';
+    go.classList.add('hidden');
+    imp.ready = false;
+    formStatus('imp', 'Imported ' + out.imported + (out.matched ? ', linked ' + out.matched : '') + '.');
+    document.getElementById('imp-close').textContent = 'Done';
+  } catch (e) {
+    formError('imp', e.message);
+  } finally {
+    go.disabled = false;
+  }
+});
 
 load();
 </script>
