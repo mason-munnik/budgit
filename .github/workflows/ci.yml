@@ -12,7 +12,7 @@ permissions:
 jobs:
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -28,10 +28,17 @@ jobs:
         run: go build ./...
       - name: Test
         run: go test -race -count=1 -coverprofile=coverage.out ./...
+      # go build proves the app compiles; only wails build proves a .app comes out.
+      - name: Package app
+        working-directory: cmd/budgit-app
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0
+          "$(go env GOPATH)/bin/wails" build -clean -skipbindings
+          test -x build/bin/budgit.app/Contents/MacOS/budgit
 
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -43,7 +50,7 @@ jobs:
 
   security:
     name: Security
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "budgit",
+  "outputfilename": "budgit",
+  "frontend:dir": "../../internal/app/frontend",
+  "frontend:install": "",
+  "frontend:build": "",
+  "author": {
+    "name": "Mason Munnik"
+  },
+  "info": {
+    "productName": "budgit",
+    "copyright": "MIT License"
+  }
+}
