@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -241,8 +242,22 @@ func (a *App) ImportCSV(req ImportRequest) (ImportOutcome, error) {
 		return ImportOutcome{}, err
 	}
 	if res.Imported > 0 || res.Matched > 0 {
+		// The undo snapshot must be the very bytes Load parsed; if another
+		// process wrote in between, Save would refuse anyway.
+		before, err := os.ReadFile(a.path)
+		if err != nil {
+			return ImportOutcome{}, err
+		}
+		if !bytes.Equal(store.Hash(before), db.Fingerprint()) {
+			return ImportOutcome{}, store.ErrChangedOnDisk
+		}
 		if err := db.Save(); err != nil {
 			return ImportOutcome{}, err
+		}
+		a.undo = &importUndo{
+			before: before,
+			after:  db.Fingerprint(),
+			info:   UndoInfo{FileName: filepath.Base(req.Path), Imported: res.Imported, Matched: res.Matched},
 		}
 	}
 	d, err := a.view(db, req.Month)

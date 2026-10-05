@@ -282,6 +282,9 @@ dialog#imp h2 { margin: 0 0 14px; font-size: 17px; font-weight: 600; }
 .imp-pick > div { border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
 .imp-pick table { font-size: 13px; margin-bottom: 10px; }
 @media (max-width: 560px) { .imp-pick { grid-template-columns: 1fr; } }
+#undo-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 14px; padding: 12px 16px; }
+#undo-bar .hint { margin: 0; }
+#undo-bar.hidden { display: none; }
 </style>
 </head>
 <body>
@@ -314,6 +317,12 @@ dialog#imp h2 { margin: 0 0 14px; font-size: 17px; font-weight: 600; }
   </dialog>
 
   <div class="card hidden" id="error"></div>
+
+  <div class="card hidden" id="undo-bar" role="status">
+    <span id="undo-text"></span>
+    <button type="button" class="mini" id="undo-go">Undo</button>
+    <span class="hint">You can undo this import until you close budgit.</span>
+  </div>
 
   <div class="tiles" id="tiles"></div>
 
@@ -629,6 +638,7 @@ async function post(method, body) {
 function render() {
   const d = state, rep = d.report;
   document.getElementById('error').classList.add('hidden');
+  renderUndo(d.undo);
   document.getElementById('month-label').textContent = monthLabel(d.month);
   document.getElementById('datafile').textContent = d.data_file;
 
@@ -2116,6 +2126,33 @@ document.getElementById('imp-go').addEventListener('click', async () => {
     formError('imp', e.message);
   } finally {
     go.disabled = false;
+  }
+});
+
+// ---- undo the latest import ----
+// Go keeps the pre-import file in memory only, and sends d.undo for as long as
+// budgit.json is exactly as that import left it. Any other change ends it.
+function renderUndo(u) {
+  document.getElementById('undo-bar').classList.toggle('hidden', !u);
+  if (!u) return;
+  const parts = [];
+  if (u.imported) parts.push(u.imported + (u.imported === 1 ? ' transaction' : ' transactions'));
+  if (u.matched) parts.push(u.matched + ' linked');
+  document.getElementById('undo-text').textContent = 'Imported ' + parts.join(', ') + ' from ' + u.file_name + '.';
+}
+
+document.getElementById('undo-go').addEventListener('click', async () => {
+  const btn = document.getElementById('undo-go');
+  btn.disabled = true;
+  try {
+    await post('UndoImport', {});
+  } catch (e) {
+    // Redraw first (the bar no longer applies), then show why: render()
+    // clears the error box, so the other order would hide the message.
+    await load(state ? state.month : '');
+    showError(e.message, 'Could not undo the import');
+  } finally {
+    btn.disabled = false;
   }
 });
 
