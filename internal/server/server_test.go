@@ -13,7 +13,7 @@ import (
 
 func TestGuardRejectsForeignHost(t *testing.T) {
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
-	h := guard("localhost:8080", ok)
+	h := guard("localhost:8080", "", ok)
 	cases := []struct {
 		host string
 		want int
@@ -51,7 +51,7 @@ func TestGuardRejectsForeignHost(t *testing.T) {
 	r := httptest.NewRequest("GET", "/", nil)
 	r.Host = "192.168.1.5:8080"
 	w := httptest.NewRecorder()
-	guard("192.168.1.5:8080", ok).ServeHTTP(w, r)
+	guard("192.168.1.5:8080", "", ok).ServeHTTP(w, r)
 	if w.Code != 200 {
 		t.Errorf("explicit remote address: %d, want 200", w.Code)
 	}
@@ -90,15 +90,81 @@ func TestWriteHandlerConflict(t *testing.T) {
 }
 
 func TestCheckLoopback(t *testing.T) {
+	t.Setenv("BUDGIT_ALLOW_REMOTE", "")
+	t.Setenv("BUDGIT_TOKEN", "")
 	for _, ok := range []string{"localhost:8080", "127.0.0.1:8080", "[::1]:9000"} {
-		if err := checkLoopback(ok); err != nil {
-			t.Errorf("checkLoopback(%q) rejected: %v", ok, err)
+		if token, err := checkLoopback(ok); err != nil || token != "" {
+			t.Errorf("checkLoopback(%q) = %q, %v; want no token, no error", ok, token, err)
 		}
 	}
 	for _, bad := range []string{"0.0.0.0:8080", "192.168.1.5:8080", ":8080"} {
-		if err := checkLoopback(bad); err == nil {
+		if _, err := checkLoopback(bad); err == nil {
 			t.Errorf("checkLoopback(%q) should have been rejected", bad)
 		}
+	}
+}
+
+// Opting in to a LAN address is not enough on its own: it takes a token too.
+func TestCheckLoopbackRemoteNeedsToken(t *testing.T) {
+	t.Setenv("BUDGIT_ALLOW_REMOTE", "1")
+	for _, weak := range []string{"", "short"} {
+		t.Setenv("BUDGIT_TOKEN", weak)
+		if _, err := checkLoopback("192.168.1.5:8080"); err == nil {
+			t.Errorf("token %q accepted; want refused", weak)
+		}
+	}
+	const good = "0123456789abcdef0123"
+	t.Setenv("BUDGIT_TOKEN", good)
+	if token, err := checkLoopback("192.168.1.5:8080"); err != nil || token != good {
+		t.Errorf("got %q, %v; want the token back", token, err)
+	}
+	// Binding every interface stays refused even with a token.
+	if _, err := checkLoopback(":8080"); err == nil {
+		t.Error(":8080 accepted")
+	}
+}
+
+func TestGuardToken(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	h := guard("192.168.1.5:8080", "0123456789abcdef", ok)
+	cases := []struct {
+		name, pass string
+		auth       bool
+		want       int
+	}{
+		{"no credentials", "", false, 401},
+		{"wrong password", "0123456789abcdeX", true, 401},
+		{"prefix of token", "0123456789", true, 401},
+		{"right password", "0123456789abcdef", true, 200},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest("GET", "/api/dashboard", nil)
+		r.Host = "192.168.1.5:8080"
+		if c.auth {
+			r.SetBasicAuth("anyone", c.pass)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != c.want {
+			t.Errorf("%s: %d, want %d", c.name, w.Code, c.want)
+		}
+		if c.want == 401 {
+			if !strings.HasPrefix(w.Header().Get("WWW-Authenticate"), "Basic ") {
+				t.Errorf("%s: no Basic challenge, so the browser would never prompt", c.name)
+			}
+			if w.Header().Get("Content-Security-Policy") == "" {
+				t.Errorf("%s: 401 sent without security headers", c.name)
+			}
+		}
+	}
+	// The Host check still comes first: a rebinding page with the password is refused.
+	r := httptest.NewRequest("GET", "/", nil)
+	r.Host = "evil.example:8080"
+	r.SetBasicAuth("x", "0123456789abcdef")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 403 {
+		t.Errorf("foreign Host with token: %d, want 403", w.Code)
 	}
 }
 

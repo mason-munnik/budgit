@@ -184,7 +184,13 @@ func (db *DB) Save() error {
 	if err := os.Chmod(tmpName, 0o600); err != nil {
 		return err
 	}
-	// Checked last, to keep the race window small.
+	// Checked last and under the lock, so no other save lands between this
+	// check and the rename.
+	unlock, err := lockFile(db.path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	now, err := onDisk(db.path)
 	if err != nil {
 		return err

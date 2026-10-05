@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -66,10 +67,12 @@ type ruleView struct {
 }
 
 // Run serves the dashboard for the data file at path until the listener fails.
-// addr must be a loopback address.
+// addr must be a loopback address, unless BUDGIT_ALLOW_REMOTE and BUDGIT_TOKEN
+// are both set.
 func Run(path, addr string) error {
 	// Fail loudly rather than silently serving unauthenticated finances to the LAN.
-	if err := checkLoopback(addr); err != nil {
+	token, err := checkLoopback(addr)
+	if err != nil {
 		return err
 	}
 	// Surface a broken/missing data file now instead of on the first request.
@@ -199,9 +202,14 @@ func Run(path, addr string) error {
 	fmt.Printf("data file: %s\n", path)
 	fmt.Println("press ctrl-c to stop")
 
+	// Requests are a few KB of JSON against a local file; nothing legitimate
+	// needs longer than these, and they stop a stuck client pinning a connection.
 	srv := &http.Server{
-		Handler:           guard(addr, mux),
+		Handler:           guard(addr, token, mux),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
 	}
 	return srv.Serve(ln)
 }
@@ -447,8 +455,10 @@ func writeErr(w http.ResponseWriter, code int, msg string) {
 }
 
 // guard checks Host on every route, which stops DNS rebinding, and sets
-// headers that forbid framing and third-party loads.
-func guard(addr string, next http.Handler) http.Handler {
+// headers that forbid framing and third-party loads. A non-empty token is
+// demanded as the HTTP Basic password on every request; the browser asks for it
+// once and then sends it with each fetch by itself.
+func guard(addr, token string, next http.Handler) http.Handler {
 	allowed := map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
 	if host, _, err := net.SplitHostPort(addr); err == nil && host != "" {
 		allowed[strings.ToLower(host)] = true // an explicit BUDGIT_ALLOW_REMOTE address
@@ -469,29 +479,48 @@ func guard(addr string, next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
+		if token != "" {
+			_, pass, _ := r.BasicAuth()
+			if subtle.ConstantTimeCompare([]byte(pass), []byte(token)) != 1 {
+				h.Set("WWW-Authenticate", `Basic realm="budgit", charset="UTF-8"`)
+				writeErr(w, http.StatusUnauthorized, "enter BUDGIT_TOKEN as the password (any username)")
+				return
+			}
+		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-func checkLoopback(addr string) error {
+// minTokenLen keeps BUDGIT_TOKEN out of guessing range for anyone on the LAN.
+const minTokenLen = 16
+
+// checkLoopback accepts a loopback addr, or any other addr when the user has
+// opted in with BUDGIT_ALLOW_REMOTE=1 and set a BUDGIT_TOKEN, which it returns.
+// Loopback needs no token: nothing else on the network can reach it.
+func checkLoopback(addr string) (token string, err error) {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("--addr %q must be host:port, e.g. localhost:8080", addr)
+		return "", fmt.Errorf("--addr %q must be host:port, e.g. localhost:8080", addr)
 	}
 	if host == "" {
-		return fmt.Errorf("--addr %q binds every interface; budgit has no auth, use localhost:8080", addr)
+		return "", fmt.Errorf("--addr %q binds every interface; budgit has no auth, use localhost:8080", addr)
 	}
 	if strings.EqualFold(host, "localhost") {
-		return nil
+		return "", nil
 	}
 	ip := net.ParseIP(host)
 	if ip != nil && ip.IsLoopback() {
-		return nil
+		return "", nil
 	}
-	if os.Getenv("BUDGIT_ALLOW_REMOTE") == "1" {
-		fmt.Fprintf(os.Stderr, "warning: serving on %s with no authentication\n", addr)
-		return nil
+	if os.Getenv("BUDGIT_ALLOW_REMOTE") != "1" {
+		return "", fmt.Errorf("--addr %q is not loopback; budgit serves your finances with no auth.\n"+
+			"       Use localhost:8080, or set BUDGIT_ALLOW_REMOTE=1 and BUDGIT_TOKEN if you really mean it", addr)
 	}
-	return fmt.Errorf("--addr %q is not loopback; budgit serves your finances with no auth.\n"+
-		"       Use localhost:8080, or set BUDGIT_ALLOW_REMOTE=1 if you really mean it", addr)
+	token = os.Getenv("BUDGIT_TOKEN")
+	if len(token) < minTokenLen {
+		return "", fmt.Errorf("BUDGIT_ALLOW_REMOTE needs BUDGIT_TOKEN set to at least %d characters;\n"+
+			"       the dashboard asks for it as a password. Try: export BUDGIT_TOKEN=$(openssl rand -hex 16)", minTokenLen)
+	}
+	fmt.Fprintf(os.Stderr, "warning: serving on %s over plain HTTP; the token crosses the network unencrypted\n", addr)
+	return token, nil
 }

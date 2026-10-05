@@ -55,14 +55,14 @@ func AddTransaction(db *DB, date, acctRef, catRef, desc, amount string) (*Transa
 		if !explicit {
 			// Unsigned: let the category decide which way the money moved.
 			if c.Kind == KindExpense {
-				cents = -abs(cents)
+				cents = -money.Abs(cents)
 			} else {
-				cents = abs(cents)
+				cents = money.Abs(cents)
 			}
 		}
 	} else if !explicit {
 		// No category to infer from; an unsigned amount is assumed spending.
-		cents = -abs(cents)
+		cents = -money.Abs(cents)
 	}
 
 	return AppendTransaction(db, d, a.ID, catID, desc, cents, ""), nil
@@ -170,7 +170,7 @@ func SetCategoryBudget(db *DB, catRef, month, amount string) (*Category, string,
 	if err != nil {
 		return nil, "", 0, err
 	}
-	cents = abs(cents) // a budget is an allowance, always positive
+	cents = money.Abs(cents) // a budget is an allowance, always positive
 	c, err := db.FindCategory(catRef)
 	if err != nil {
 		return nil, "", 0, err
@@ -207,9 +207,9 @@ func CategorizeTransaction(db *DB, id int, catRef string) (*Transaction, string,
 	// filed under a different expense category.
 	if oldKind != c.Kind {
 		if c.Kind == KindExpense {
-			t.AmountCents = -abs(t.AmountCents)
+			t.AmountCents = -money.Abs(t.AmountCents)
 		} else {
-			t.AmountCents = abs(t.AmountCents)
+			t.AmountCents = money.Abs(t.AmountCents)
 		}
 	}
 	return t, was, nil
@@ -487,7 +487,7 @@ func EditTransaction(db *DB, id int, e TxnEdit) (*Transaction, error) {
 				cat := db.CategoryByID(t.CategoryID)
 				out = cat == nil || cat.Kind == KindExpense
 			}
-			if c = abs(c); out {
+			if c = money.Abs(c); out {
 				c = -c
 			}
 		}
@@ -512,13 +512,6 @@ func RuleReach(db *DB, match string) (all, uncategorized int) {
 		}
 	}
 	return all, uncategorized
-}
-
-func abs(v int64) int64 {
-	if v < 0 {
-		return -v
-	}
-	return v
 }
 
 func plural(n int, one, many string) string {
