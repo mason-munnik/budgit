@@ -155,9 +155,9 @@ func (d *dialect) rowAmount(row []string) (cents int64, assumedOut bool, err err
 			return 0, false, fmt.Errorf("row has both a debit (%s) and a credit (%s)",
 				cell(row, d.Debit), cell(row, d.Credit))
 		case hasDebit:
-			return -abs(debit), false, nil
+			return -money.Abs(debit), false, nil
 		case hasCredit:
-			return abs(credit), false, nil
+			return money.Abs(credit), false, nil
 		}
 		return 0, false, errNoAmount
 
@@ -171,13 +171,13 @@ func (d *dialect) rowAmount(row []string) (cents int64, assumedOut bool, err err
 		}
 		switch directionWord(cell(row, d.Type)) {
 		case 1:
-			return abs(amount), false, nil
+			return money.Abs(amount), false, nil
 		case -1:
-			return -abs(amount), false, nil
+			return -money.Abs(amount), false, nil
 		}
 		// An unrecognised type word is assumed to be money going out — almost
 		// everything on a statement is — and counted so the summary says so.
-		return -abs(amount), true, nil
+		return -money.Abs(amount), true, nil
 
 	default:
 		amount, ok, err := parseCents(cell(row, d.Amount), d.DecimalSep)
@@ -510,11 +510,4 @@ func Import(db *store.DB, path string, acctID int, opts Options) (*Result, error
 type claimKey struct {
 	date  string
 	cents int64
-}
-
-func abs(v int64) int64 {
-	if v < 0 {
-		return -v
-	}
-	return v
 }

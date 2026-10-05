@@ -224,6 +224,15 @@ Budgeting an income category is still done from the command line. Changes made i
 
 The dashboard binds to localhost only and has no password. It refuses any request that did not come from its own page or that names a host other than localhost, and it loads nothing from the internet.
 
+To open it from another device on your network, you have to ask twice and set a password:
+
+```sh
+export BUDGIT_TOKEN=$(openssl rand -hex 16)
+BUDGIT_ALLOW_REMOTE=1 budgit serve --addr 192.168.1.5:8080
+```
+
+The browser asks for a username and password; type anything as the username and the token as the password. The connection is plain HTTP, so only do this on a network you trust.
+
 ## Moving a transaction between categories
 
 ```sh

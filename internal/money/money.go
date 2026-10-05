@@ -8,6 +8,14 @@ import (
 
 // Money is always handled as integer cents. Never float.
 
+// Abs is the unsigned size of an amount.
+func Abs(cents int64) int64 {
+	if cents < 0 {
+		return -cents
+	}
+	return cents
+}
+
 // ParseMoney parses a human-typed amount into signed cents.
 // It reports whether the caller wrote an explicit leading sign, which lets
 // the transaction commands infer direction from the category when they didn't.
