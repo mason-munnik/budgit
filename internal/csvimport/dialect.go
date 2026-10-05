@@ -3,6 +3,7 @@ package csvimport
 import (
 	"bytes"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -418,6 +419,11 @@ func directionWord(s string) int {
 	return 0
 }
 
+// ErrSignConflict matches (with errors.Is) the error Import returns when a
+// file's signs contradict its own type column. The caller decides: the CLI asks
+// for --invert or --no-invert, the desktop app shows the rows both ways.
+var ErrSignConflict = errors.New("this file's signs look inverted")
+
 // signConflictError is raised when a file's amount signs contradict its own type
 // column. budgit refuses to guess here: silently reversing every row in a
 // statement is the worst thing this importer could do.
@@ -426,6 +432,8 @@ type signConflictError struct {
 	debitLabel, creditLabel       string
 	agree                         int
 }
+
+func (e *signConflictError) Is(target error) bool { return target == ErrSignConflict }
 
 func (e *signConflictError) Error() string {
 	var b strings.Builder

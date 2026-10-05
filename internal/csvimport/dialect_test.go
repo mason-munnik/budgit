@@ -1,6 +1,7 @@
 package csvimport
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -192,6 +193,17 @@ func TestSignConflictDetected(t *testing.T) {
 		if !contains(err.Error(), want) {
 			t.Errorf("message should mention %q, got:\n%s", want, err)
 		}
+	}
+}
+
+// Callers outside the package can only see the conflict through ErrSignConflict.
+func TestSignConflictIsErrSignConflict(t *testing.T) {
+	d, rows := detect(t, "inverted.csv", Options{})
+	if err := d.checkSigns(rows); !errors.Is(err, ErrSignConflict) {
+		t.Errorf("errors.Is(%v, ErrSignConflict) = false", err)
+	}
+	if errors.Is(errors.New("other"), ErrSignConflict) {
+		t.Error("an unrelated error matched ErrSignConflict")
 	}
 }
 

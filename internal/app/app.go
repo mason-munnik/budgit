@@ -4,6 +4,7 @@
 package app
 
 import (
+	"context"
 	"embed"
 	"fmt"
 	iofs "io/fs"
@@ -22,6 +23,8 @@ func Frontend() (iofs.FS, error) { return iofs.Sub(frontendFS, "frontend") }
 // App owns the data file for one window.
 type App struct {
 	path string
+	// ctx is the Wails runtime context, set by Startup; dialogs need it.
+	ctx context.Context
 	// mu serializes load -> mutate -> save. Wails runs each call from the page
 	// on its own goroutine, and two overlapping calls would both load the same
 	// file; the second save would then fail with ErrChangedOnDisk for no reason

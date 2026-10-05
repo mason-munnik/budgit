@@ -332,12 +332,19 @@ const previewLimit = 12
 // aborts the import with nothing written — a half-imported statement is worse
 // than none. The caller saves.
 func Import(db *store.DB, path string, acctID int, opts Options) (*Result, error) {
-	if opts.Invert && opts.NoInvert {
-		return nil, fmt.Errorf("--invert and --no-invert contradict each other")
-	}
 	data, err := os.ReadFile(path) // #nosec G304 G703 -- a CSV the user named on the CLI; not reachable from serve
 	if err != nil {
 		return nil, err
+	}
+	return ImportData(db, path, data, acctID, opts)
+}
+
+// ImportData is Import for a file already read into memory; name is only used
+// to label the result. The desktop app reads the bytes once and hands the same
+// bytes to its fingerprint and to this, so what it hashed is what it imports.
+func ImportData(db *store.DB, name string, data []byte, acctID int, opts Options) (*Result, error) {
+	if opts.Invert && opts.NoInvert {
+		return nil, fmt.Errorf("--invert and --no-invert contradict each other")
 	}
 
 	d, rows, rowLines, err := detectDialect(data, opts)
@@ -382,7 +389,7 @@ func Import(db *store.DB, path string, acctID int, opts Options) (*Result, error
 		}
 	}
 
-	res := &Result{Path: path, Dialect: d, Rows: len(rows)}
+	res := &Result{Path: name, Dialect: d, Rows: len(rows)}
 
 	// Staged, not appended: nothing touches db until the whole file parses.
 	type staged struct {
