@@ -44,6 +44,8 @@ type Dashboard struct {
 	AvailableMonths []string           `json:"available_months"`
 	DataFile        string             `json:"data_file"`
 	Rules           []RuleView         `json:"rules"`
+	// Undo is set while the latest import can still be undone.
+	Undo *UndoInfo `json:"undo,omitempty"`
 }
 
 func buildDashboard(db *store.DB, month, path string) Dashboard {

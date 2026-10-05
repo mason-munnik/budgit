@@ -160,15 +160,38 @@ func Load(path string) (*DB, error) {
 // Save writes atomically (temp file, then rename), and returns
 // ErrChangedOnDisk rather than overwrite another process's write.
 func (db *DB) Save() error {
-	if err := os.MkdirAll(filepath.Dir(db.path), 0o700); err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(db, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	tmp, err := os.CreateTemp(filepath.Dir(db.path), ".budgit-*.tmp")
+	if err := replace(db.path, data, db.loaded); err != nil {
+		return err
+	}
+	db.loaded = fingerprint(data, true)
+	return nil
+}
+
+// Fingerprint is the SHA-256 of the file as Load read it or Save last wrote
+// it; nil if there was no file.
+func (db *DB) Fingerprint() []byte { return db.loaded }
+
+// Hash returns data's fingerprint, in the same form Fingerprint reports.
+func Hash(data []byte) []byte { return fingerprint(data, true) }
+
+// Restore puts data back as the file at path, but only while the file still
+// hashes to expect: anything written since then is never silently erased.
+func Restore(path string, data, expect []byte) error {
+	return replace(path, data, expect)
+}
+
+// replace writes data over path atomically (temp file, then rename), provided
+// the file on disk still hashes to expect; otherwise ErrChangedOnDisk.
+func replace(path string, data, expect []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".budgit-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -186,23 +209,19 @@ func (db *DB) Save() error {
 	}
 	// Checked last and under the lock, so no other save lands between this
 	// check and the rename.
-	unlock, err := lockFile(db.path)
+	unlock, err := lockFile(path)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	now, err := onDisk(db.path)
+	now, err := onDisk(path)
 	if err != nil {
 		return err
 	}
-	if !bytes.Equal(now, db.loaded) {
+	if !bytes.Equal(now, expect) {
 		return ErrChangedOnDisk
 	}
-	if err := os.Rename(tmpName, db.path); err != nil {
-		return err
-	}
-	db.loaded = fingerprint(data, true)
-	return nil
+	return os.Rename(tmpName, path)
 }
 
 // ---- lookup ----

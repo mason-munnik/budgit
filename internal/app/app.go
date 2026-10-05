@@ -30,6 +30,9 @@ type App struct {
 	// file; the second save would then fail with ErrChangedOnDisk for no reason
 	// the user could see.
 	mu sync.Mutex
+	// undo is the latest import's way back, held only in memory so budgit's
+	// data stays in one file. Guarded by mu.
+	undo *importUndo
 }
 
 // New returns an App for the data file at path.
@@ -109,7 +112,9 @@ func (a *App) view(db *store.DB, month string) (Dashboard, error) {
 	if err != nil {
 		return Dashboard{}, err
 	}
-	return buildDashboard(db, m, a.path), nil
+	d := buildDashboard(db, m, a.path)
+	d.Undo = a.undoInfo(db)
+	return d, nil
 }
 
 // ---- transactions ----
