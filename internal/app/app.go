@@ -63,6 +63,21 @@ func (a *App) Dashboard(month string) (Dashboard, error) {
 	return a.view(db, month)
 }
 
+// Trends builds the compare-periods card. A zero Count means the default.
+func (a *App) Trends(q store.TrendQuery) (store.TrendsResult, error) {
+	if q.Count < 0 {
+		return store.TrendsResult{}, fmt.Errorf("count %d must be a positive number", q.Count)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	db, err := store.Load(a.path)
+	if err != nil {
+		return store.TrendsResult{}, err
+	}
+	return store.BuildTrends(db, q, store.Today())
+}
+
 // write is every mutation's shared path: load, apply, save, and answer with a
 // fresh dashboard so the page redraws without a second call. A rejected
 // mutation is never saved, so a bad category name costs nothing.

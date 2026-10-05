@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -155,5 +156,31 @@ func TestDashboardDefaultsToNewestMonth(t *testing.T) {
 	}
 	if _, err := a.Dashboard("2026-9"); err == nil {
 		t.Error("malformed month accepted")
+	}
+}
+
+// The page sends lowercase keys and TrendQuery has no json tags; Wails decodes
+// with encoding/json, which matches field names case-insensitively.
+func TestTrendsFromPageShapedQuery(t *testing.T) {
+	a, _ := seeded(t)
+	if _, err := a.AddTransaction(Request{Date: "2026-09-04", Category: "Groceries", Amount: "10"}); err != nil {
+		t.Fatal(err)
+	}
+	var q store.TrendQuery
+	if err := json.Unmarshal([]byte(`{"period":"month","compare":"none","count":3,"end":"2026-09-30"}`), &q); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.Trends(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Period != "month" || res.Count != 3 || res.Compare != "none" || res.End != "2026-09-30" {
+		t.Errorf("got %+v, want the page's query echoed back", res)
+	}
+	if _, err := a.Trends(store.TrendQuery{Period: "month", Count: -1}); err == nil {
+		t.Error("negative count accepted")
+	}
+	if _, err := a.Trends(store.TrendQuery{Period: "fortnight"}); err == nil {
+		t.Error("unknown period accepted")
 	}
 }
